@@ -71,8 +71,8 @@ model.to(device)
 loss_func = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-max_num_epochs = 1000
-patience = 10
+max_num_epochs = 1000  # Maximum number of epochs to train
+patience = 10 # How many epochs to wait before stopping training if no improvement
 model = train_model(model, optimizer, loss_func, train_loader, val_loader, 
                     max_num_epochs, device, 
                     patience=patience,

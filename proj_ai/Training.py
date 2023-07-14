@@ -72,8 +72,14 @@ def train_model(model, optimizer, loss_func, train_loader, val_loader, max_num_e
         writer.add_scalar('Loss/val', cur_val_loss, epoch)
         writer.add_scalars('train/val', {'training':loss, 'validation':cur_val_loss}, global_step=epoch)
 
+        # Saving the graph of the model (only once)
         if epoch == 0:
             writer.add_graph(model, data)
+
+        # Stopping the model if there is no improvement
+        if epochs_no_improve >= patience:
+            print('Early stopping!')
+            break
 
         print(f'Epoch: {epoch+1}, Val loss: {cur_val_loss:.4f} Training loss: {sum_training_loss/len(train_loader.dataset) :.4f}')
 
