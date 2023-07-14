@@ -15,7 +15,7 @@ class BasicDenseModel(nn.Module):
         else:
             return nn.ReLU()
 
-    def __init__(self, input_size, hidden_layers=1, neurons_per_layer=1, 
+    def __init__(self, input_size, output_size, hidden_layers=1, neurons_per_layer=1, 
                  activation_hidden='relu', activation_output='linear', 
                  batch_nomalization=False):
 
@@ -39,15 +39,19 @@ class BasicDenseModel(nn.Module):
 
         self.act_hidden = self.chooseActivation(activation_hidden)
         self.act_output = self.chooseActivation(activation_output)
-        self.output_layer = nn.Linear(neurons_per_layer, 1)
+        self.output_layer = nn.Linear(neurons_per_layer, output_size)
 
     # On the forward function we indicate how to make one 'pass' of the model
     def forward(self, x):
-        print(x.shape)
+        # print(f"Running the model: {x.shape}")
         l1 = self.input_layer(x)  # With simple non-linear function
+        # print(l1.shape)
         for i in range(self.n_hidden_layers):
             l1 = self.act_hidden(self.hidden_layers[i](l1))  # With batch normalization
-            if self.batch_nomalization:
+            # print(l1.shape)
+            if self.batch_nomalization and l1.shape[0] > 1:
                 l1 = self.bns[i](l1)
+            # print(l1.shape)
         l2 = self.act_output(self.output_layer(l1))
+        # print(l2.shape)
         return l2

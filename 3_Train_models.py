@@ -29,8 +29,8 @@ print("Using device: ", device)
 
 # %%
 val_perc = 0.1
-batch_size_training = 21
-batch_size_validation = 10
+batch_size_training = 400
+workers = 20
 
 #%% ----- Create DataLoaders --------
 data_folder = RunConfig.data_folder.value
@@ -46,9 +46,8 @@ print("Total number of training samples: ", len(train_dataset))
 print("Total number of validation samples: ", len(val_dataset))
 
 # Create DataLoaders for training and validation
-workers = 20
 train_loader = DataLoader(train_dataset, batch_size=batch_size_training, shuffle=True, num_workers=workers)
-val_loader = DataLoader(val_dataset, batch_size=batch_size_validation, num_workers=workers)
+val_loader = DataLoader(val_dataset, batch_size= len(val_dataset),  shuffle=False, num_workers=workers)
 print("Done loading data!")
 
 #%% Visualize some data
@@ -57,13 +56,14 @@ print("Done loading data!")
 # Make aplot 
 
 #%% Initialize the model, loss, and optimizer
-input_size = 1
-hidden_layers = 5
+input_size = 2  #  SSH and SST
+output_size = 2001*2  # 2001 vertical levels, 2 variables
+hidden_layers = 1
 neurons_per_layer = 100
 activation_hidden = 'relu'
 activation_output = 'linear'
 batch_norm = True
-model = BasicDenseModel(input_size, hidden_layers, neurons_per_layer, 
+model = BasicDenseModel(input_size, output_size, hidden_layers, neurons_per_layer, 
                       activation_hidden, activation_output, batch_norm)
 model.to(device)
 
@@ -71,9 +71,12 @@ model.to(device)
 loss_func = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-num_epochs = 1000
+max_num_epochs = 1000
+patience = 10
 model = train_model(model, optimizer, loss_func, train_loader, val_loader, 
-                    num_epochs, device, output_folder)
+                    max_num_epochs, device, 
+                    patience=patience,
+                    output_folder=output_folder)
 
 print("Done training!")
 # #%% Showing some results

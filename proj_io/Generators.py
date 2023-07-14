@@ -53,9 +53,10 @@ class ProjDataset(Dataset):
 
     def __getitem__(self, idx):
         # Example of returning just SSH as input and T and S as output
-        print(f'Getting item {idx} from dataset')
-        return self.ssh[idx], np.concatenate((self.temp[:,idx], self.salt[:,idx]))
-
+        input =  np.array([self.ssh[idx].squeeze(), self.temp[0,idx]])
+        target = np.concatenate((self.temp[:,idx], self.salt[:,idx]))
+        # print(f'Getting item {idx} from dataset, input shape: {input.shape}, target shape: {target.shape}')
+        return input, target
 # %% ----- Test DataLoader --------
 if __name__ == "__main__":
     # ----------- Skynet ------------
@@ -67,10 +68,11 @@ if __name__ == "__main__":
     input_folder = RunConfig.data_folder.value
     
     dataset = ProjDataset(input_folder=input_folder)
-    myloader = DataLoader(dataset, batch_size=2, shuffle=True)
+    myloader = DataLoader(dataset, batch_size=20, shuffle=False)
     # --------- Just reading some lats lons ----------
     for i, batch in enumerate(myloader):
-        print(batch[0].shape)
+        # Print the size of the batch, size of input and output
+        print(f'Batch size: {batch[0].shape}, Input size: {batch[0].shape}, Output size: {batch[1].shape}')
         ssh, ts = batch
         plot_single_ts_profile(ts[0][0:2001],ts[0][2001:4002], title=f'Batch {i}')
         break
