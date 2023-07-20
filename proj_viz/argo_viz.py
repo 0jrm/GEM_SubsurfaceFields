@@ -42,7 +42,8 @@ def plot_ts_profiles(temp_profiles, sal_profiles, start_profile, depths=range(0,
     plt.tight_layout()
     plt.show()
 
-def plot_single_ts_profile(t, s,  depths=range(0, -2001, -1), title='Profile'):
+def plot_single_ts_profile(t, s,  depths=range(0, -2001, -1), title='Profile',
+                           labelone='Temperature', labeltwo='Salinity'):
     fig, ax = plt.subplots(1, 1, figsize=(10, 12))
 
     # Create a second x-axis for salinity

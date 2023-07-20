@@ -9,28 +9,22 @@ from proj_io.Generators import ProjDataset
 from proj_ai.proj_models import BasicDenseModel
 from configs.RunConfig import RunConfig
 
-
 # External libraries
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torchvision
-import torchvision.transforms as transforms
-import matplotlib.pyplot as plt
-from torch.utils.data import Dataset, DataLoader
-from torch.nn.parallel import DistributedDataParallel
-import numpy as np
-import cmocean.cm as cm
-from os.path import join
+from torch.utils.data import DataLoader
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # device = "cpu"
 print("Using device: ", device)
 
 # %%
+profile_code = False
 val_perc = 0.1
 batch_size_training = 400
 workers = 20
+model_name = 'BasicDenseModel'
 
 #%% ----- Create DataLoaders --------
 data_folder = RunConfig.data_folder.value
@@ -58,7 +52,7 @@ print("Done loading data!")
 #%% Initialize the model, loss, and optimizer
 input_size = 2  #  SSH and SST
 output_size = 2001*2  # 2001 vertical levels, 2 variables
-hidden_layers = 1
+hidden_layers = 4
 neurons_per_layer = 100
 activation_hidden = 'relu'
 activation_output = 'linear'
@@ -73,15 +67,22 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 max_num_epochs = 1000  # Maximum number of epochs to train
 patience = 10 # How many epochs to wait before stopping training if no improvement
+
+
+if profile_code:
+    import cProfile
+    profiler = cProfile.Profile()
+    profiler.enable()
+
 model = train_model(model, optimizer, loss_func, train_loader, val_loader, 
-                    max_num_epochs, device, 
+                    max_num_epochs, 
+                    model_name,
+                    device, 
                     patience=patience,
                     output_folder=output_folder)
 
+if profile_code:
+    profiler.disable()
+    profiler.dump_stats('profile_stats.prof')
+
 print("Done training!")
-# #%% Showing some results
-# # Get a batch of test data
-# dataiter = iter(val_loader)
-# data, target = next(dataiter)
-# data, target = data.to(device), target.to(device)
-# output = model(data)

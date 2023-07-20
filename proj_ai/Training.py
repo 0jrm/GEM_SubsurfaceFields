@@ -1,13 +1,11 @@
 import torch
-import torch.nn as nn
-import torchvision
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 from os.path import join
 from eoas_pyutils.io_utils.io_common import create_folder
 
 def train_model(model, optimizer, loss_func, train_loader, val_loader, max_num_epochs, 
-                 device='gpu', patience=10, output_folder='training'):
+                 model_name='', device='gpu', patience=10, output_folder='training'):
     '''
     Main function in charge of training a model
     :param model:
@@ -21,7 +19,8 @@ def train_model(model, optimizer, loss_func, train_loader, val_loader, max_num_e
     '''
     print("Training model...")
     cur_time = datetime.now()
-    model_name = f'{cur_time.strftime("%Y%m%d-%H%M%S")}'
+    model_name = f'{model_name}_{cur_time.strftime("%Y-%m-%d_%H:%M")}'
+
     output_folder = join(output_folder, model_name)
     create_folder(output_folder)
     create_folder(join(output_folder, 'models'))
@@ -62,15 +61,17 @@ def train_model(model, optimizer, loss_func, train_loader, val_loader, max_num_e
         if cur_val_loss < min_val_loss:
             epochs_no_improve = 0
             min_val_loss = cur_val_loss
-            torch.save(model.state_dict(), join(output_folder, 'models', f'best_model_{epoch}_{min_val_loss:0.4f}.pt'))
+            torch.save(model.state_dict(), join(output_folder, 'models', f'{model_name}_epoch:{epoch:03d}_{min_val_loss:0.8f}.pt'))
         else:
             epochs_no_improve += 1
 
         # ==================  Saving data for tensorboard ============
         # Normal loss
-        writer.add_scalar('Loss/train', sum_training_loss/len(train_loader.dataset), epoch)
+        mean_train_loss = sum_training_loss/len(train_loader.dataset)
+        writer.add_scalar('Loss/train', mean_train_loss, epoch)
         writer.add_scalar('Loss/val', cur_val_loss, epoch)
-        writer.add_scalars('train/val', {'training':loss, 'validation':cur_val_loss}, global_step=epoch)
+        writer.add_scalars('T&V', {'training':mean_train_loss,
+                                          'validation':cur_val_loss}, global_step=epoch)
 
         # Saving the graph of the model (only once)
         if epoch == 0:
@@ -81,7 +82,9 @@ def train_model(model, optimizer, loss_func, train_loader, val_loader, max_num_e
             print('Early stopping!')
             break
 
-        print(f'Epoch: {epoch+1}, Val loss: {cur_val_loss:.4f} Training loss: {sum_training_loss/len(train_loader.dataset) :.4f}')
+        print(f'Epoch: {epoch+1}, Val loss: {cur_val_loss:.6f} Training loss: {mean_train_loss :.4f}')
+        if epoch > 5:
+            break
 
     print("Done!")
     writer.close()

@@ -9,7 +9,8 @@ import pandas as pd
 import sys
 sys.path.append("ai_common_torch")
 
-# EOAS Utils
+# Local
+from configs import RunConfig
 sys.path.append("eoas_pyutils")
 from eoas_pyutils.io_utils.io_common import create_folder
 
@@ -17,8 +18,8 @@ NET = "Network Type"
 LOSS  = "Loss value"
 
 # Read folders for all the experiments
-trained_models_folder = ""
-output_folder = ""
+trained_models_folder = RunConfig.training_folder.value
+output_folder = join(trained_models_folder, "summary")
 
 all_folders = os.listdir(trained_models_folder)
 all_folders.sort()
@@ -35,8 +36,8 @@ for experiment in all_folders:
         best_model = {}
         # Iterate over the saved models for each experiment and obtain the best of them
         for model in all_models:
-            model_split = model.split("-")
-            loss = float((model_split[-1]).replace(".hdf5",""))
+            model_split = model.split("_")
+            loss = float((model_split[-1]).replace(".pt",""))
             if loss < min_loss:
                 min_loss = loss
                 id = model_split[0]
