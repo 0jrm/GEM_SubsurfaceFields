@@ -71,6 +71,37 @@ def plot_single_ts_profile(t, s,  depths=range(0, -2001, -1), title='Profile',
     plt.tight_layout()
     plt.show()
 
+def compare_profiles(p1, p2,  depths=range(0, -2001, -1), title='Profile',
+                           labelone='Original', labeltwo='Preprocessed', figsize=10):
+
+    fig, ax = plt.subplots(1, 1, figsize=(figsize, int(figsize*1.2)))
+
+    # Create a second x-axis for salinity
+    ax2 = ax.twiny()
+    # Plot temperature profile
+    ax.plot(p1, depths, 'r-', label=labelone)
+    # Plot salinity profile
+    ax2.plot(p2, depths, 'g-', label=labeltwo)
+    # Add labels and title
+    ax.set_title(f'{title}')
+    ax.set_xlabel(labelone, color='r')
+    ax.set_ylabel('Depth (m)')
+    ax2.set_xlabel(labeltwo, color='g')
+    # Invert y-axis so depth increases downwards
+    ax.set_ylim(reversed(ax.get_ylim()))
+    ax2.set_ylim(reversed(ax2.get_ylim()))
+    # Add legend
+    ax.legend(loc='center right')
+    ax2.legend(loc='lower right')
+    # Make the font of the x axis blue
+    ax.tick_params(axis='x', colors='r')
+    ax2.tick_params(axis='x', colors='g')
+
+    # Make the layout more tight
+    plt.tight_layout()
+    plt.show()
+
+
 
 def plot_profiles_sorted_by_SH1950(ARGO):
     '''

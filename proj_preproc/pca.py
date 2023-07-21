@@ -1,7 +1,7 @@
 # %%
 import sys
-# sys.path.append("./")
-sys.path.append("../")
+sys.path.append("./")
+# sys.path.append("../")
 
 from proj_io.argo_io import read_normalize_data
 from configs.RunConfig import RunConfig
@@ -24,5 +24,8 @@ pca = PCA(n_components=components)
 pca.fit(temp)
 temp_pca = pca.transform(temp)
 print(f'PCA shape: {temp_pca.shape}')
+print(f"Explained Variance Ratio: {pca.explained_variance_ratio_.sum():0.6f}")
+
 recovered = pca.inverse_transform(temp_pca) 
 plot_single_ts_profile(temp[:,index], recovered[:,index])
+# %%

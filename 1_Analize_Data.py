@@ -32,12 +32,10 @@ print('SPICE', np.shape(ARGO.SPICE))    # SPICE (2001, 4890)
 print('TEMP', np.shape(ARGO.TEMP))      # TEMP (2001, 4890)
 print('TIME', np.shape(ARGO.TIME))      # TIME (4890,)
 
-# %% Plot some profiles
+# %% Plot some profiles from the ARGOS
 start_profile = 10
 plot_ts_profiles(ARGO.TEMP, ARGO.SAL, start_profile)
 
 # %% Plot all profiles aligned by depth
 # Sort the temperature profiles by SH1950 values
 plot_profiles_sorted_by_SH1950(ARGO)
-
-# %%

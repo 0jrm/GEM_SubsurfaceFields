@@ -83,8 +83,6 @@ def train_model(model, optimizer, loss_func, train_loader, val_loader, max_num_e
             break
 
         print(f'Epoch: {epoch+1}, Val loss: {cur_val_loss:.6f} Training loss: {mean_train_loss :.4f}')
-        if epoch > 5:
-            break
 
     print("Done!")
     writer.close()

@@ -5,7 +5,7 @@ sys.path.append("eoas_pyutils/")
 
 # Local libraries
 from proj_ai.Training import train_model
-from proj_io.Generators import ProjDataset
+from proj_io.Generators import ProjDataset, ProjDatasetPCA
 from proj_ai.proj_models import BasicDenseModel
 from configs.RunConfig import RunConfig
 
@@ -24,18 +24,25 @@ profile_code = False
 val_perc = 0.1
 batch_size_training = 400
 workers = 20
-model_name = 'BasicDenseModel'
+model_name = 'BasicDenseModel_WithPCA'
+with_pca = True
+# Only if using pca
+temp_componets = 100
+sal_components = 100
 
 #%% ----- Create DataLoaders --------
 data_folder = RunConfig.data_folder.value
 output_folder = RunConfig.training_folder.value
 
-train_dataset = ProjDataset(data_folder)
+if with_pca:
+    dataset = ProjDatasetPCA(data_folder, temp_components=temp_componets, sal_components=sal_components)
+else:
+    dataset = ProjDataset(data_folder)
 
 # %%# Split train and validation 'normal/default way'
-train_size = int( (1 - val_perc) * len(train_dataset))
-val_size = len(train_dataset) - train_size
-train_dataset, val_dataset = torch.utils.data.random_split(train_dataset, [train_size, val_size])
+train_size = int( (1 - val_perc) * len(dataset))
+val_size = len(dataset) - train_size
+train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
 print("Total number of training samples: ", len(train_dataset))
 print("Total number of validation samples: ", len(val_dataset))
 
@@ -49,9 +56,11 @@ print("Done loading data!")
 # dataiter = iter(train_loader)
 # Make aplot 
 
+
 #%% Initialize the model, loss, and optimizer
-input_size = 2  #  SSH and SST
-output_size = 2001*2  # 2001 vertical levels, 2 variables
+inout_dims = dataset.get_inout_dims()
+input_size = inout_dims[0]  
+output_size = inout_dims[1]  
 hidden_layers = 4
 neurons_per_layer = 100
 activation_hidden = 'relu'
@@ -67,7 +76,6 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 max_num_epochs = 1000  # Maximum number of epochs to train
 patience = 10 # How many epochs to wait before stopping training if no improvement
-
 
 if profile_code:
     import cProfile
@@ -86,3 +94,9 @@ if profile_code:
     profiler.dump_stats('profile_stats.prof')
 
 print("Done training!")
+
+# %% 
+# Use the model to predict a couple of profiles in the validation set
+for batch_idx, (data, target) in enumerate(train_loader):
+    print(f'{batch_idx}/{len(train_loader.dataset)}', end='\r')
+    data, target = data.to(device), target.to(device)
