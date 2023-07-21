@@ -10,7 +10,7 @@ import sys
 sys.path.append("ai_common_torch")
 
 # Local
-from configs import RunConfig
+from configs.RunConfig import RunConfig
 sys.path.append("eoas_pyutils")
 from eoas_pyutils.io_utils.io_common import create_folder
 
