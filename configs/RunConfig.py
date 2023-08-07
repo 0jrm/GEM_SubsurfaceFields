@@ -1,7 +1,7 @@
 from enum import Enum
 
 class RunConfig(Enum):
-    data_folder = "/home/jmiranda/SubsurfaceFields/latest_naiveGEMS"
+    data_folder = "/home/jmiranda/SubsurfaceFields/Data"
     training_folder = "/unity/f1/ozavala/OUTPUTS/GEM_SubSurface"
 
     # val_perc =
