@@ -1,22 +1,23 @@
-# %% DONE!
+# %%
 import numpy as np
-from netCDF4 import Dataset
 import xarray as xr
 import os
+import sys
 import pandas as pd
-import dask.dataframe as dd
 import datetime
 import matplotlib.pyplot as plt
-import sys
-from shapely.geometry import LineString, Polygon, MultiPoint, Point
-import gsw
+from shapely.geometry import Point
+from scipy.interpolate import RegularGridInterpolator
 
-sys.path.append("/home/jmiranda/GEM_SubsurfaceFields/torch_folder/eoas-pyutils/")
+from proj_viz.argo_viz import plot_single_ts_profile, compare_profiles
+sys.path.append("/home/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/eoas_pyutils/")
 from io_utils.coaps_io_data import get_aviso_by_date, get_sst_by_date, get_sss_by_date
 # from io_utils.io_netcdf import read_netcdf_xr, read_multiple_netcdf_xarr # read_multiple not working, using my own
 from viz_utils.eoa_viz import select_colormap, EOAImageVisualizer
 from viz_utils.eoas_viz_3d import ImageVisualizer3D
 from viz_utils.constants import PlotMode
+
+processed = True
 
 def load_join_clean(path, files, variables, num_files=None):
     """Load, joins and remove NaNs from multiple NetCDF files.
@@ -31,41 +32,11 @@ def load_join_clean(path, files, variables, num_files=None):
     pandas.DataFrame: The concatenated clean dataset as a DataFrame.
     """
     # Initialize an empty list to store the datasets
-    datasets = []
-
-    # Loop over the files
-    for file in files[:num_files]:  # Limit the number of files if specified
-        # Only process .nc files
-        if not file.endswith('.nc'):
-            continue
-
-        # Define the file path
-        file_path = os.path.join(path, file)
-
-        # Open the dataset without decoding times
-        ds = xr.open_dataset(file_path, decode_times=False)
-
-        # Extract the variables of interest
-        ds = ds[variables]
-
-        # Append the dataset to the list
-        datasets.append(ds)
-
-    # Concatenate all datasets
+    datasets = [xr.open_dataset(os.path.join(path, file), decode_times=False)[variables] for file in files[:num_files] if file.endswith('.nc')]
     ds_combined = xr.concat(datasets, dim='time')
-
-    # Convert the dataset to a DataFrame
-    df = ds_combined.to_dataframe()
-
-    # Remove rows with missing values
-    df_clean = df.dropna()
-    
-    # Convert the index to a DatetimeIndex
+    df_clean = ds_combined.to_dataframe().dropna()
     df_clean.index = pd.to_datetime(df_clean.index, unit='s')
-
-    # Extract the date for each measurement
     df_clean['date'] = df_clean.index.date
-
     return df_clean
 
 def plot_profiles(df, day):
@@ -77,146 +48,111 @@ def plot_profiles(df, day):
     """
     # Filter the DataFrame for the chosen day
     df_day = df[df['date'] == day]
-
     fig, axs = plt.subplots(1, 3, figsize=(20, 6))
-    
-    variables = ['temperature', 'salinity', 'density']
-    titles = ['Temperature Profile', 'Salinity Profile', 'Density Profile']
-    ylabels = ['Temperature (°C)', 'Salinity (psu)', 'Density (kg/m³)']
-    colormaps = ['RdBu_r', 'Blues', 'viridis']
-    
+    variables, titles, ylabels, colormaps = ['temperature', 'salinity', 'density'], ['Temperature Profile', 'Salinity Profile', 'Density Profile'], ['Temperature (°C)', 'Salinity (psu)', 'Density (kg/m³)'], ['RdBu_r', 'Blues', 'viridis']
     for i, var in enumerate(variables):
-        sc = axs[i].scatter(df_day[var], df_day['depth'], alpha=0.5, s=1)
+        axs[i].scatter(df_day[var], df_day['depth'], alpha=0.5, s=1)
         axs[i].set_title(f'{titles[i]} on {day}')
         axs[i].set_xlabel(ylabels[i])
         axs[i].set_ylabel('Depth (m)')
         axs[i].invert_yaxis()
-
+        axs[i].grid(True)
     plt.tight_layout()
     plt.show()
 
-# %% 
-# Define the path to the directory containing the files
-path = "/home/jmiranda/GEM_SubsurfaceFields/input_data/LCE_Poseidon/"
-# Get a list of all files and directories in the folder
-all_files = os.listdir(path)
-# Filter only the files with the .nc extension
-nc_files = [file for file in all_files if file.endswith('.nc')]
-
-variables = ['pressure', 'depth', 'time', 'lat', 'lon', 'salinity', 'temperature', 'density']
-
-# Load and join data
-ds = load_join_clean(path, nc_files, variables, num_files=len(nc_files))
-
-# Plot profiles for a specific day
-day = pd.to_datetime('2016-08-06').date()  # Modify this to the day you're interested in
-plot_profiles(ds, day)
 
 # %%
-# Calculate the pressure difference for each row compared to the previous row
+# Data Loading and Cleaning
+path = "/home/jmiranda/SubsurfaceFields/Data/LCE_Poseidon/"
+nc_files = [file for file in os.listdir(path) if file.endswith('.nc')]
+variables = ['pressure', 'depth', 'time', 'lat', 'lon', 'salinity', 'temperature', 'density']
+if processed:
+    ds = pd.read_pickle("/home/jmiranda/SubsurfaceFields/Data/glider_processed.pkl")
+else:
+    ds = load_join_clean(path, nc_files, variables, num_files=len(nc_files))
+
+
+# %%
+# Separate profiles, get position for each profile
 ds['pres_diff'] = ds['pressure'].diff()
-
-# Determine whether each row is part of an ascent or descent
 ds['direction'] = np.where(ds['pres_diff'] > 0, 'descent', 'ascent')
-
-# Assign a unique profile ID to each ascent/descent
 ds['profile_id'] = (ds['direction'] != ds['direction'].shift()).cumsum()
+position = ds.groupby('profile_id')[['lat', 'lon']].first()
 
-# Get median latitude and longitude for each profile
-medians = ds.groupby('profile_id')[['lat', 'lon']].median()
-
-# Get the global minimum and maximum values for temperature, salinity, and depth
-temp_min, temp_max = ds['temperature'].min()-1, ds['temperature'].max()+1
-salinity_min, salinity_max = ds['salinity'].min()-1, ds['salinity'].max()+1
-depth_min, depth_max = ds['depth'].min(), ds['depth'].max()+50
-
-# Function to plot individual profiles
-def plot_individual_profiles(df, profile_id):
-    df_profile = df[df['profile_id'] == profile_id]
-    
-    fig, axs = plt.subplots(1, 2, figsize=(10, 6))
-    
-    variables = ['temperature', 'salinity']
-    titles = ['Temperature Profile', 'Salinity Profile']
-    ylabels = ['Temperature (°C)', 'Salinity (psu)']
-    x_lims = [(temp_min, temp_max), (salinity_min, salinity_max)]
-    colors = ['r', 'b']
-    
-    for i, var in enumerate(variables):
-        axs[i].plot(df_profile[var], df_profile['depth'], color=colors[i])
-        axs[i].set_title(f'{titles[i]} for Profile ID {profile_id}')
-        axs[i].set_xlabel(ylabels[i])
-        axs[i].set_ylabel('Depth (m)')
-        axs[i].set_xlim(x_lims[i])
-        axs[i].set_ylim(depth_max, depth_min) # Inverted to display depth correctly
-        # axs[i].invert_yaxis()
-    
-    plt.tight_layout()
-    plt.show()
-
-# # Test the function with a specific profile_id
-# for i in range(max(ds['profile_id'])):
-#     plot_individual_profiles(ds, i+1)
-
-# %% figure out points candidates (median of the track)
-
-# load aviso data (2016-08-06 - 2016-09-05) 
+# AVISO Data
 aviso_folder = "/unity/f1/ozavala/DATA/GOFFISH/AVISO/GoM/"
 bbox = [17.5, 32.5, -110, -80]
-x = datetime.datetime(2016, 8, 6)
-# test. this should be done in a
-aviso_data, lats, lons = get_aviso_by_date(aviso_folder, x, bbox)
-print(aviso_data["time"]) # check date
+start_date = datetime.datetime(2016, 8, 6)
+end_date = datetime.datetime(2016, 9, 5)
+delta = datetime.timedelta(days=1)
+date_of_interest = start_date
 
-# Filter the medians DataFrame for profiles from the desired date
-date_of_interest = x.date()  # x is the date used to load the AVISO data
-profiles_on_date = ds[ds.index.date == date_of_interest]['profile_id'].unique()
-medians_on_date = medians.loc[profiles_on_date]
+def get_prof_ssh_from_aviso(lats, lons, aviso_data, grid_lats, grid_lons):
+    """Interpolates AVISO altimetry to profile locations.
 
-# TO-DO: Plot the AVISO data AND the location of the profiles
-# %%
-viz_obj = EOAImageVisualizer(lats=lats, lons=lons, disp_images=True, output_folder="outputs",  show_var_names=True, eoas_pyutils_path=".")
-viz_obj.plot_2d_data_np(aviso_data.adt, ['adt'], 'LC', 'filepref', plot_mode=PlotMode.RASTER)
+    Parameters:
+    lats (array-like): Latitudes of the profile locations.
+    lons (array-like): Longitudes of the profile locations.
+    aviso_data (array-like): AVISO altimetry data on a regular grid.
+    grid_lats (array-like): Latitudes of the regular grid.
+    grid_lons (array-like): Longitudes of the regular grid.
 
-# # Plot the locations of the profiles
-# Assuming medians_on_date contains the 'lat' and 'lon' data
-latitudes = medians_on_date['lat']
-longitudes = medians_on_date['lon']
-# %%
+    Returns:
+    numpy.ndarray: Interpolated altimetry values at the profile locations.
+    """
+    interpolator = RegularGridInterpolator((grid_lats, grid_lons), aviso_data.values, bounds_error=False, fill_value=None)
+    coordinates = np.array([lats, lons]).T
+    return interpolator(coordinates)
 
-# Create the multipoint variable by combining latitudes and longitudes
-# mymultipoint = MultiPoint(list(zip(latitudes, longitudes)))
-mymultipoint = MultiPoint(list(zip(latitudes, longitudes)))
-# mymultipoint = MultiPoint((latitudes[i], longitudes[i]) for i in range(latitudes.size))
 
 # %%
-viz_obj.__setattr__('additional_polygons', mymultipoint)
-viz_obj.plot_2d_data_np(aviso_data.adt, ['adt'], 'With external polygon', 'filepref', plot_mode=PlotMode.CONTOUR)
+# Initialize an empty DataFrame to store additional data
+additional_data = []
 
-
-# # # Add the steric height as text above each point
-# # fig, ax = plt.gca()  # Get the current figure and axes
-# # for idx, row in medians_on_date.iterrows():
-# #     ax.text(row['lon'], row['lat'], f"{row['steric_height']:.2f}", fontsize=9, ha='center', va='bottom')
-
-
-
-# %% Check if correct
-def calculate_steric_height(dataset):
-    # Calculate Absolute Salinity (g/kg)
-    SA = gsw.SA_from_SP(dataset['salinity'], dataset['pressure'], 0, dataset['latitude'])
+# Get AVISO, plot daily profiles
+while date_of_interest <= end_date:
+    date_string = date_of_interest.strftime("%Y-%m-%d")
+    aviso_data, lats, lons = get_aviso_by_date(aviso_folder, date_of_interest, bbox)
+    profiles_on_date = ds[ds.index.date == date_of_interest.date()]['profile_id'].unique()
+    position_on_date = position.loc[profiles_on_date]
+    prof_lat, prof_lon = position_on_date['lat'].values, position_on_date['lon'].values
+    profile_ssh = get_prof_ssh_from_aviso(prof_lat, prof_lon, aviso_data.adt, lats, lons)
     
-    # Calculate Conservative Temperature (°C)
-    CT = gsw.CT_from_t(SA, dataset['temperature'], dataset['pressure'])
+    plot_points = [Point(lon, lat) for lat, lon in zip(prof_lat, prof_lon)]
+    viz_obj = EOAImageVisualizer(lats=lats, lons=lons, disp_images=True, output_folder="outputs", show_var_names=True)
+    viz_obj.__setattr__('plot_pointsgons', plot_points)
+    
+    viz_obj.plot_2d_data_np(aviso_data.adt, ['adt'], f'- glider profiles on {date_string}', 'filepref')
+    print("date\t\tlat\t\t\tlon\t\t\tAVISO SSH")
+    for lat, lon, altimetry_value in zip(prof_lat, prof_lon, profile_ssh):
+        print(f"{date_string}\t{lat}\t{lon}\t{altimetry_value}")
+    plot_profiles(ds, date_of_interest.date())
+    
+     # Create a temporary DataFrame with profile_id, lat, lon, and AVISO SSH
+    temp_data = pd.DataFrame({
+        'profile_id': profiles_on_date,
+        'lat_position': prof_lat,
+        'lon_position': prof_lon,
+        'AVISO_SSH': profile_ssh
+    })
 
-    # Calculate specific volume anomaly
-    delta_v = gsw.specvol_anom_standard(SA, CT, dataset['pressure'])
+    for lat, lon, ssh, profile_id in zip(prof_lat, prof_lon, profile_ssh, profiles_on_date):
+        additional_data.append({
+            'profile_id': profile_id,
+            'lat_position': lat,
+            'lon_position': lon,
+            'AVISO_SSH': ssh
+        })
+    
+    date_of_interest += delta
 
-    # Integrate specific volume anomaly from the bottom to the surface to get dynamic height
-    dynamic_height = gsw.geo_strf_dyn_height(SA, CT, dataset['pressure'], p_ref=0)
+additional_data_df = pd.DataFrame(additional_data)
 
-    # Convert dynamic height to steric height (m)
-    steric_height = dynamic_height / 9.81
+# %%
+# Merge the additional data with the existing DataFrame using profile_id as the key
+ds = ds.merge(additional_data_df, on='profile_id', how='left')
 
-    return steric_height
 
+# %% Save processed data
+ds.to_pickle("/home/jmiranda/SubsurfaceFields/Data/glider_processed.pkl")
+# %%
