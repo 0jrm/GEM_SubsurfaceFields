@@ -16,6 +16,8 @@ pickle_folder = "/home/jmiranda/SubsurfaceFields/Data/glider_processed.pkl"
 ds = pd.read_pickle(pickle_folder)
 
 # %%
+# Generate the sections from the glider data
+
 # Function to calculate distance between two lat-lon points
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371  # Earth radius in km
@@ -95,7 +97,7 @@ fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(14, 15))
 
 plot_filled_contour(X, Z, temperature_grid, 'Temperature ($^\circ$C)', ccm.thermal, 'Temperature ($^\circ$C)', axs[0])
 plot_filled_contour(X, Z, salinity_grid, 'Salinity (PSU)', ccm.haline, 'Salinity (PSU)', axs[1])
-plot_filled_contour(X, Z, density_grid, 'Density (kg/m$^3$)', ccm.matter, 'Density (kg/m$^3$)', axs[2])
+plot_filled_contour(X, Z, density_grid, 'Density (kg/m$^3$)', 'hot_r', 'Density (kg/m$^3$)', axs[2])
 plt.suptitle('Original Track\n', fontsize=18)
 plt.tight_layout()
 plt.show()
@@ -200,10 +202,10 @@ density_grid_new = griddata(
 fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(14, 15))
 
 plot_filled_contour(X_new, Z_new, temperature_grid_new, 'Temperature ($^\circ$C)', ccm.thermal, 'Temperature ($^\circ$C)', axs[0])
-plot_filled_contour(X_new, Z_new, salinity_grid_new, 'Salinity (PSU)', ccm.haline, 'Temperature ($^\circ$C)', axs[1])
-plot_filled_contour(X_new, Z_new, density_grid_new, 'Density (kg/m$^3$)', ccm.matter, 'Temperature ($^\circ$C)', axs[2])
+plot_filled_contour(X_new, Z_new, salinity_grid_new, 'Salinity (PSU)', ccm.haline, 'Salinity (PSU)', axs[1])
+plot_filled_contour(X_new, Z_new, density_grid_new, 'Density (kg/m$^3$)', 'hot_r', 'Density (kg/m$^3$)', axs[2])
 # Repeat for salinity and density with their respective new grids
-plt.suptitle('Straight projection of the Track\n', fontsize=18)
+plt.suptitle('Straight projection of the Track\n', fontsize=18, fontweight='bold')
 plt.tight_layout()
 plt.grid(True)
 plt.show()
@@ -211,3 +213,11 @@ plt.show()
 # %%
 # Implement the Geosprophic and cyclogeostrophic velocities and relative vorticities calculations
 # and plot them
+
+
+# %%
+# Save processed data
+track_folder = "/home/jmiranda/SubsurfaceFields/Data/glider_track_sorted.pkl"
+
+data_sorted.to_pickle(track_folder)
+# %%

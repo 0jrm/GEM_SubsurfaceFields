@@ -279,7 +279,7 @@ if not processed:
     ds = pd.merge(ds, mld_table, on='profile_id', how='left')
     # Save processed data
     ds.to_pickle(pickle_folder)
-    # save to chatGPT
+    # chatGPT can't read this version of pickle, so save as csv
     gpt_path = "/home/jmiranda/SubsurfaceFields/Data/glider_gpt.csv"
     ds.to_csv(gpt_path, index=False)
     
