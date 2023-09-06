@@ -3,6 +3,7 @@ import mat73
 from os.path import join
 from sklearn.preprocessing import StandardScaler
 import pandas as pd
+import numpy as np
 
 
 def read_data(input_folder):
@@ -10,6 +11,25 @@ def read_data(input_folder):
 
 def read_normalize_data(input_folder, scaler=StandardScaler()):
     data = read_data(input_folder)
+    # ------ added part: removal of missing values
+    n_nans = 10
+    # Identify indexes with excessive NaNs in TEMP and SAL
+    indexes_temp = np.where(np.isnan(data.TEMP).sum(axis=1) >= n_nans)[0]
+    indexes_sal = np.where(np.isnan(data.SAL).sum(axis=1) >= n_nans)[0]
+    # Combine the two sets of indexes
+    drop_indexes = np.union1d(indexes_temp, indexes_sal)
+    # Drop these indexes from the dataset
+    for attribute in ['TEMP', 'SAL', 'SH1950', 'TIME', 'LAT', 'LON']:
+        attribute_data = getattr(data, attribute)
+        # Check the shape of the attribute
+        if len(attribute_data.shape) == 2:
+            # 2D data with profile information
+            setattr(data, attribute, np.delete(attribute_data, drop_indexes, axis=1))
+        elif len(attribute_data.shape) == 1:
+            # 1D data, remove the relevant indexes
+            setattr(data, attribute, np.delete(attribute_data, drop_indexes))
+    # ------ end of added part
+
     # ------- Temp
     data.TEMP = pd.DataFrame(data.TEMP).fillna(method='ffill').fillna(method='bfill').values
     scaler.fit(data.TEMP)

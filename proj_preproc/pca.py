@@ -1,7 +1,7 @@
 # %%
 import sys
-sys.path.append("./")
-# sys.path.append("../")
+# sys.path.append("./")
+sys.path.append("../")
 
 from proj_io.argo_io import read_normalize_data
 from configs.RunConfig import RunConfig
@@ -18,7 +18,7 @@ temp = data.SAL
 print(f'Original shape: {temp.shape}')
 # Use sklearn.decomposition.PCA to reduce the dimensionality temp data
 # %%
-index = 300
+index = 320
 components = 100
 pca = PCA(n_components=components)
 pca.fit(temp)

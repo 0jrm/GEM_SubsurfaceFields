@@ -37,7 +37,7 @@ class ProjDataset(Dataset):
 
 
 class ProjDatasetPCA(Dataset):
-    def __init__(self, input_folder, temp_components, sal_components, transform=None):
+    def __init__(self, input_folder, temp_components, sal_components, transform=None, test=False):
 
         data = read_normalize_data(input_folder)
         self.input_folder = input_folder
@@ -51,7 +51,30 @@ class ProjDatasetPCA(Dataset):
         self.lats = data.LAT.astype(np.float32)
         self.lons = data.LON.astype(np.float32)
 
+        # TODO hardcoded size of test
+        test_perc = 0.1
+        train_val_size = int(self.temp_raw.shape[1]*(1-test_perc))
+
+        if test:
+            self.temp_raw = self.temp_raw[:,train_val_size:]
+            self.salt_raw = self.salt_raw[:,train_val_size:]
+            self.ssh = self.ssh[train_val_size:]
+            self.time = self.time[train_val_size:]
+            self.lats = self.lats[train_val_size:]
+            self.lons = self.lons[train_val_size:]
+            self.total_examples = self.temp_raw.shape[1]
+        else:
+            self.temp_raw = self.temp_raw[:,:train_val_size]
+            self.salt_raw = self.salt_raw[:,:train_val_size]
+            self.ssh = self.ssh[:train_val_size]
+            self.time = self.time[:train_val_size]
+            self.lats = self.lats[:train_val_size]
+            self.lons = self.lons[:train_val_size]
+            self.total_examples = train_val_size
+
         # Perform PCA on the temperature
+        # TODO: the PCA should be made always on the training/validation dataset. 
+        # Independent of if we are using test = True or False
         pca_temp = PCA(n_components=temp_components)
         pca_temp.fit(self.temp_raw.T)
         self.temp = pca_temp.transform(self.temp_raw.T).T

@@ -24,25 +24,29 @@ profile_code = False
 val_perc = 0.1
 batch_size_training = 400
 workers = 20
-model_name = 'BasicDenseModel_WithPCA'
+model_name = 'BasicDenseModel_WithPCA_Sep6'
 with_pca = True
+seed = 42
 # Only if using pca
-temp_componets = 100
-sal_components = 100
+temp_componets = 10
+sal_components = 10
 
 #%% ----- Create DataLoaders --------
 data_folder = RunConfig.data_folder.value
 output_folder = RunConfig.training_folder.value
 
 if with_pca:
-    dataset = ProjDatasetPCA(data_folder, temp_components=temp_componets, sal_components=sal_components)
+    dataset = ProjDatasetPCA(data_folder, temp_components=temp_componets, 
+                             sal_components=sal_components,
+                             test=False)
 else:
     dataset = ProjDataset(data_folder)
 
 # %%# Split train and validation 'normal/default way'
 train_size = int( (1 - val_perc) * len(dataset))
 val_size = len(dataset) - train_size
-train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+train_dataset, val_dataset = torch.utils.data.random_split(dataset, 
+                                                           [train_size, val_size], generator=torch.Generator().manual_seed(seed))
 print("Total number of training samples: ", len(train_dataset))
 print("Total number of validation samples: ", len(val_dataset))
 
