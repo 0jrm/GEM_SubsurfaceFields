@@ -83,22 +83,23 @@ def plot_filled_contour(X, Z, grid, title, colormap, cbar_label, ax=None):
     if ax is None:
         ax = plt.gca()
     cs = ax.contourf(X, Z, grid, cmap=colormap, levels=25, extend='both')
-    ax.contour(X, Z, grid, colors='black', levels=25, linewidths=0.2)
+    ax.contour(X, Z, grid, colors='black', levels=25, linewidths=0.1)
     cbar = plt.colorbar(cs, ax=ax, orientation='vertical')
     cbar.set_label(cbar_label)
-    ax.set_title(title)
+    # ax.set_title(title)
     ax.set_xlabel('Distance (km)')
     ax.set_ylabel('Depth (m)')
     ax.invert_yaxis()
     ax.grid(True, color='black', linestyle=':', linewidth=0.2)
 
 # Plot the properties
-fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(14, 15))
+fig, axs = plt.subplots(nrows=2, ncols=1, figsize=(14, 15))
+# fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(14, 15))
 
 plot_filled_contour(X, Z, temperature_grid, 'Temperature ($^\circ$C)', ccm.thermal, 'Temperature ($^\circ$C)', axs[0])
 plot_filled_contour(X, Z, salinity_grid, 'Salinity (PSU)', ccm.haline, 'Salinity (PSU)', axs[1])
-plot_filled_contour(X, Z, density_grid, 'Density (kg/m$^3$)', 'hot_r', 'Density (kg/m$^3$)', axs[2])
-plt.suptitle('Original Track\n', fontsize=18)
+# plot_filled_contour(X, Z, density_grid, 'Density (kg/m$^3$)', 'hot_r', 'Density (kg/m$^3$)', axs[2])
+plt.suptitle('Track\n', fontsize=18, fontweight='bold')
 plt.tight_layout()
 plt.show()
 
@@ -199,13 +200,14 @@ density_grid_new = griddata(
 )
 
 # Plot the properties using the new interpolated grids
-fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(14, 15))
+fig, axs = plt.subplots(nrows=2, ncols=1, figsize=(14, 15))
+# fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(14, 15))
 
 plot_filled_contour(X_new, Z_new, temperature_grid_new, 'Temperature ($^\circ$C)', ccm.thermal, 'Temperature ($^\circ$C)', axs[0])
 plot_filled_contour(X_new, Z_new, salinity_grid_new, 'Salinity (PSU)', ccm.haline, 'Salinity (PSU)', axs[1])
-plot_filled_contour(X_new, Z_new, density_grid_new, 'Density (kg/m$^3$)', 'hot_r', 'Density (kg/m$^3$)', axs[2])
+# plot_filled_contour(X_new, Z_new, density_grid_new, 'Density (kg/m$^3$)', 'hot_r', 'Density (kg/m$^3$)', axs[2])
 # Repeat for salinity and density with their respective new grids
-plt.suptitle('Straight projection of the Track\n', fontsize=18, fontweight='bold')
+plt.suptitle('Transect (projected)\n', fontsize=18, fontweight='bold')
 plt.tight_layout()
 plt.grid(True)
 plt.show()

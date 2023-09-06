@@ -3,67 +3,90 @@ from sklearn.decomposition import PCA
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
-from proj_io.argo_io import read_normalize_data  # Needs to be commented for testing 
+from proj_io.argo_io import read_normalize_data_test, read_normalize_data # Needs to be commented for testing 
+# from proj_io.argo_io import read_normalize_data  # Needs to be commented for testing 
 
 ## ------- Custom dataset ------
+
 class ProjDataset(Dataset):
     def __init__(self, input_folder, transform=None):
 
-        data = read_normalize_data(input_folder)
+        data = read_normalize_data_test(input_folder)
+        # data, self.scaler = read_normalize_data_test(input_folder)
+        # data, scaler = read_normalize_data(input_folder)
         self.input_folder = input_folder
-        self.total_examples = data.ADT_loc.shape[0]
+        self.total_examples = data.SH1950.shape[0]
         self.transform = transform
 
         self.temp = data.TEMP.astype(np.float32)
         self.salt = data.SAL.astype(np.float32)
+        self.avg_temp = data.avg_temp.astype(np.float32)
+        self.std_temp = data.std_temp.astype(np.float32)
+        self.avg_sal = data.avg_sal.astype(np.float32)
+        self.std_sal = data.std_sal.astype(np.float32)
         self.ssh = data.SH1950.astype(np.float32)
-        self.time = data.TIME.astype(np.float32)
+        self.time = np.cos(data.TIME.astype(np.float32)%365)
+        # self.time = data.TIME.astype(np.float32)
         self.lats = data.LAT.astype(np.float32)
         self.lons = data.LON.astype(np.float32)
-        self.inoutdims = [2, len(np.concatenate((self.temp[:,0], self.salt[:,0])))] # Two for SSH and SST, one for T and S
+        self.inoutdims = [3, len(np.concatenate((self.temp[:,0], self.salt[:,0])))] # Two for SSH and SST, one for T and S
+        # self.inoutdims = [2, len(np.concatenate((self.temp[:,0], self.salt[:,0])))] # Two for SSH and SST, one for T and S
         
     def __len__(self):
         return self.total_examples
 
     def __getitem__(self, idx):
         # Example of returning just SSH as input and T and S as output
-        input =  np.array([self.ssh[idx].squeeze(), self.temp[0,idx]])
+        # input =  np.array([self.ssh[idx].squeeze(), self.temp[0,idx]])
+        input =  np.array([self.ssh[idx].squeeze(), self.temp[0,idx], self.time[idx].squeeze()])
         target = np.concatenate((self.temp[:,idx], self.salt[:,idx]))
         # print(f'Getting item {idx} from dataset, input shape: {input.shape}, target shape: {target.shape}')
         return input, target
 
     def get_inout_dims(self):
         return self.inoutdims
+    
+    def get_original_profile(self, idx):
+        '''
+        Returns the original profile for a given index
+        '''
+        return self.temp[:,idx], self.salt[:,idx]
 
 
 class ProjDatasetPCA(Dataset):
     def __init__(self, input_folder, temp_components, sal_components, transform=None):
 
+        self.scaler = {}
         data = read_normalize_data(input_folder)
+        # data = read_normalize_data_test(input_folder)
         self.input_folder = input_folder
-        self.total_examples = data.ADT_loc.shape[0]
+        self.total_examples = data.SH1950.shape[0]
         self.transform = transform
 
-        self.temp_raw = data.TEMP.astype(np.float32)
-        self.salt_raw = data.SAL.astype(np.float32)
-        self.ssh = data.SH1950.astype(np.float32)
+        self.temp = data.TEMP.astype(np.float32)
+        self.salt = data.SAL.astype(np.float32)
+        self.avg_temp = data.avg_temp.astype(np.float32)
+        self.std_temp = data.std_temp.astype(np.float32)
+        self.avg_sal = data.avg_sal.astype(np.float32)
+        self.std_sal = data.std_sal.astype(np.float32)
+        self.ssh =  data.SH1950.astype(np.float32)
         self.time = data.TIME.astype(np.float32)
         self.lats = data.LAT.astype(np.float32)
         self.lons = data.LON.astype(np.float32)
 
         # Perform PCA on the temperature
         pca_temp = PCA(n_components=temp_components)
-        pca_temp.fit(self.temp_raw.T)
-        self.temp = pca_temp.transform(self.temp_raw.T).T
-        print(f'Temp PCA shape: {self.temp.shape}, original shape: {self.temp_raw.shape}')
+        pca_temp.fit(self.temp.T)
+        self.temp = pca_temp.transform(self.temp.T).T
+        print(f'Temp PCA shape: {self.temp.shape}, original shape: {self.temp.shape}')
         print(f"Explained Variance Ratio: {pca_temp.explained_variance_ratio_.sum():0.6f}")
         self.pca_temp = pca_temp
 
         # Perform PCA on the salinity
         pca_sal = PCA(n_components=sal_components)
-        pca_sal.fit(self.salt_raw.T)
-        self.salt = pca_sal.transform(self.salt_raw.T).T
-        print(f'Sal PCA shape: {self.salt.shape}, original shape: {self.salt_raw.shape}')
+        pca_sal.fit(self.salt.T)
+        self.salt = pca_sal.transform(self.salt.T).T
+        print(f'Sal PCA shape: {self.salt.shape}, original shape: {self.salt.shape}')
         print(f"Explained Variance Ratio: {pca_sal.explained_variance_ratio_.sum():0.6f}")
         self.pca_sal = pca_sal
 
@@ -86,7 +109,7 @@ class ProjDatasetPCA(Dataset):
         '''
         Returns the original profile for a given index
         '''
-        return self.temp_raw[:,idx], self.salt_raw[:,idx]
+        return self.temp[:,idx], self.salt[:,idx]
 
     def inverse_pca(self, temp, sal):
         # Inverse the PCA transformation
