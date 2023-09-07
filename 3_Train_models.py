@@ -28,8 +28,8 @@ model_name = 'BasicDenseModel_WithPCA_Sep6'
 with_pca = True
 seed = 42
 # Only if using pca
-temp_componets = 10
-sal_components = 10
+temp_componets = 15
+sal_components = 15
 
 #%% ----- Create DataLoaders --------
 data_folder = RunConfig.data_folder.value

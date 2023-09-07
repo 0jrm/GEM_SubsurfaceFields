@@ -104,7 +104,7 @@ for model_id in range(len(df)):
         output = model(data)
 
         # We do inverse pca on each sal and temp
-        for idx, c_profile in enumerate(output[:10,:]):
+        for idx, c_profile in enumerate(output):
             print(c_profile.shape)
 
             c_temp = c_profile[:temp_componets].to('cpu').detach().numpy()
@@ -126,16 +126,22 @@ for model_id in range(len(df)):
             # plot_single_ts_profile(target_t, target_s,  depths=range(0, -2001, -1), title=f'Profile_{idx}',
                         #    labelone='Temperature', labeltwo='Salinity')
 
-            compare_profiles(raw_t, target_t,  depths=range(0, -2001, -1), title=f'Profile_{idx}',
+            compare_profiles(raw_t, target_t,  depths=range(0, -2001, -1), title=f'Profile_{idx} - Original VS PCA',
                            labelone='Raw', labeltwo='Target', figsize=10)
 
-            compare_profiles(target_t, t,  depths=range(0, -2001, -1), title=f'Profile_{idx}',
+            compare_profiles(raw_s, target_s,  depths=range(0, -2001, -1), title=f'Profile_{idx} - Original VS PCA',
+                           labelone='Raw', labeltwo='Target', figsize=10)
+            
+            compare_profiles(raw_t, t,  depths=range(0, -2001, -1), title=f'Profile_{idx} - Temperature',
                            labelone='Target T', labeltwo='NN T', figsize=10)
 
-            compare_profiles(target_s, s,  depths=range(0, -2001, -1), title=f'Profile_{idx}',
+            compare_profiles(raw_s, s,  depths=range(0, -2001, -1), title=f'Profile_{idx} - Salinity',
                            labelone='Target S', labeltwo='NN S', figsize=10)
-            if idx > 5:
-                break
+            
+            print(f"Profile: {idx} - Done!")
+            # if idx > 5:
+            #     break
 
         break
 # %%
+#To-do: fix number of profile, add ssh value, subplot?
