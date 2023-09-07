@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from sklearn.decomposition import PCA
+from torch.utils.data import random_split
 
 class TemperatureSalinityDataset(torch.utils.data.Dataset):
     """
@@ -119,16 +120,6 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         """Returns number of profiles in the dataset."""
         return self.TEMP.shape[1]
     
-    # def __getitem__(self, idx):
-    #     """
-    #     Args:
-    #     - idx (int): Index of the profile.
-
-    #     Returns:
-    #     - tuple: SSH value and concatenated PCA components for temperature and salinity.
-    #     """
-    #     return torch.tensor(self.SSH[idx], dtype=torch.float32).unsqueeze(-1), torch.tensor(np.hstack([self.temp_pcs[:, idx], self.sal_pcs[:, idx]]), dtype=torch.float32)
-
     def inverse_transform(self, pcs):
         """
         Inverse the PCA transformation.
@@ -139,9 +130,36 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         Returns:
         - tuple: Inversed temperature and salinity profiles.
         """
-        temp_profiles = self.pca_temp.inverse_transform(pcs[:, :15]).T
-        sal_profiles = self.pca_sal.inverse_transform(pcs[:, 15:]).T
+        temp_profiles = self.pca_temp.inverse_transform(pcs[:, :n_components]).T
+        sal_profiles = self.pca_sal.inverse_transform(pcs[:, n_components:]).T
         return temp_profiles, sal_profiles
+    
+    def get_profiles(self, indices, pca_approx=False):
+        """
+        Returns temperature and salinity profiles for the given indices.
+
+        Args:
+        - indices (list or numpy.ndarray): List of indices for which profiles are needed.
+        - pca_approx (bool): Flag to return PCA approximated profiles if True, 
+                             or original profiles if False.
+
+        Returns:
+        - numpy.ndarray: concatenated temperature and salinity profiles in the required format for visualization.
+        """
+        if pca_approx:
+            # Concatenate temp and sal PCA components for the given indices
+            concatenated_pcs = np.hstack([self.temp_pcs[:, indices].T, self.sal_pcs[:, indices].T])
+            # Obtain PCA approximations using the concatenated components
+            temp_profiles, sal_profiles = self.inverse_transform(concatenated_pcs)
+        else:
+            temp_profiles = self.TEMP[:, indices]
+            sal_profiles = self.SAL[:, indices]
+
+        # Stack along the third dimension
+        profiles_array = np.stack([temp_profiles, sal_profiles], axis=1)
+
+        return profiles_array
+    
 
 class PredictionModel(nn.Module):
     """
@@ -168,6 +186,8 @@ class PredictionModel(nn.Module):
         prev_dim = input_dim
         for neurons in layers_config:
             layers.append(nn.Linear(prev_dim, neurons))
+            # layers.append(nn.Tanh())
+            # layers.append(nn.Sigmoid())
             layers.append(nn.ReLU())
             prev_dim = neurons
         layers.append(nn.Linear(prev_dim, output_dim))
@@ -185,14 +205,33 @@ class PredictionModel(nn.Module):
         - torch.Tensor: Model's predictions of shape (batch_size, output_dim).
         """
         return self.model(x)
+    
+def split_dataset(dataset, train_size, val_size, test_size):
+    """
+    Splits the dataset into training, validation, and test sets.
+    
+    Parameters:
+    - dataset: The entire dataset to be split.
+    - train_size, val_size, test_size: Proportions for splitting. They should sum to 1.
+    
+    Returns:
+    - train_dataset, val_dataset, test_dataset: Split datasets.
+    """
+    total_size = len(dataset)
+    train_len = int(total_size * train_size)
+    val_len = int(total_size * val_size)
+    test_len = total_size - train_len - val_len
 
-def train_model(model, dataloader, criterion, optimizer, device, epochs=100, patience=10):
+    return random_split(dataset, [train_len, val_len, test_len])
+
+def train_model(model, train_loader, val_loader, criterion, optimizer, device, epochs=100, patience=10):
     """
     Train the model with early stopping and CUDA support.
 
     Parameters:
     - model: the PyTorch model.
-    - dataloader: the DataLoader for training data.
+    - train_loader: the DataLoader for training data.
+    - val_loader: the DataLoader for validation data.
     - criterion: the loss function.
     - optimizer: the optimizer.
     - device: device to which data and model should be moved before training.
@@ -203,13 +242,13 @@ def train_model(model, dataloader, criterion, optimizer, device, epochs=100, pat
     - model: trained model.
     """
     model.to(device)
-    best_loss = float('inf')
+    best_val_loss = float('inf')
     no_improve_count = 0
 
     for epoch in range(epochs):
         model.train()
-        running_loss = 0.0
-        for inputs, labels in dataloader:
+        running_train_loss = 0.0
+        for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
             
             optimizer.zero_grad()
@@ -222,14 +261,17 @@ def train_model(model, dataloader, criterion, optimizer, device, epochs=100, pat
             loss.backward()
             optimizer.step()
             
-            running_loss += loss.item()
+            running_train_loss += loss.item()
 
-        avg_loss = running_loss / len(dataloader)
-        print(f"Epoch [{epoch + 1}/{epochs}] Loss: {avg_loss:.4f}")
+        avg_train_loss = running_train_loss / len(train_loader)
+        
+        # Validation loss
+        avg_val_loss = evaluate_model(model, val_loader, criterion, device)
+        print(f"Epoch [{epoch + 1}/{epochs}] Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
 
         # Check for early stopping
-        if avg_loss < best_loss:
-            best_loss = avg_loss
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
             no_improve_count = 0
         else:
             no_improve_count += 1
@@ -266,12 +308,37 @@ def evaluate_model(model, dataloader, criterion, device):
     avg_loss = running_loss / len(dataloader)
     return avg_loss
 
-def visualize_results(true_values, predicted_values, num_samples=5):
+def get_predictions(model, dataloader, device):
     """
-    Visualize the true vs. predicted values for a sample of profiles using only matplotlib.
+    Get model's predictions on the provided data with CUDA support.
+
+    Parameters:
+    - model: the PyTorch model.
+    - dataloader: the DataLoader for the data.
+    - device: device to which data and model should be moved before getting predictions.
+
+    Returns:
+    - predictions: model's predictions.
+    """
+    model.to(device)
+    model.eval()
+    predictions = []
+
+    with torch.no_grad():
+        for inputs in dataloader:
+            inputs = inputs[0].to(device)  # Getting only the input features, ignoring labels
+            outputs = model(inputs)
+            predictions.extend(outputs.cpu().numpy())
+
+    return np.array(predictions)
+
+def visualize_results_with_original(true_values, pca_approx, predicted_values, num_samples=5):
+    """
+    Visualize the true vs. predicted vs. PCA approximated values for a sample of profiles.
 
     Parameters:
     - true_values: ground truth temperature and salinity profiles.
+    - pca_approx: PCA approximated temperature and salinity profiles.
     - predicted_values: model's predicted temperature and salinity profiles.
     - num_samples: number of random profiles to visualize.
 
@@ -280,62 +347,68 @@ def visualize_results(true_values, predicted_values, num_samples=5):
     """
     n_depths = 2001
     depth_levels = np.arange(n_depths)
-    indices = np.random.choice(int(true_values.shape[0]/n_depths), num_samples, replace=False)
+    indices = np.random.choice(int(true_values.shape[2]), num_samples, replace=False)
 
     for idx in indices:
         fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-        idxx = np.arange(idx*n_depths, (idx+1)*n_depths)
+        
         # Temperature profile
-        axs[0].plot(true_values[idxx, 0, 0], depth_levels, label="True")
-        axs[0].plot(predicted_values[idxx, 0, 0], depth_levels, label="Predicted")
+        axs[0].plot(true_values[:,0, idx], depth_levels, label="Original")
+        axs[0].plot(pca_approx[:, 0, idx], depth_levels, label="PCA Approximation")
+        axs[0].plot(predicted_values[0][:, idx], depth_levels, label="NN Predicted")
         axs[0].invert_yaxis()  # To have the surface (depth=0) on top
         axs[0].set_title(f"Temperature Profile {idx}")
         axs[0].set_ylabel("Depth Level")
         axs[0].set_xlabel("Temperature")
-        axs[0].legend()
+        axs[0].legend(loc='lower right')
+        axs[0].grid()
 
         # Salinity profile
-        axs[1].plot(true_values[idxx, 1, 0], depth_levels, label="True")
-        axs[1].plot(predicted_values[idxx, 1, 0], depth_levels, label="Predicted")
+        axs[1].plot(true_values[:,1, idx], depth_levels, label="Original")
+        axs[1].plot(pca_approx[:, 1, idx], depth_levels, label="PCA Approximation")
+        axs[1].plot(predicted_values[1][:, idx], depth_levels, label="Predicted")
         axs[1].invert_yaxis()  # To have the surface (depth=0) on top
         axs[1].set_title(f"Salinity Profile {idx}")
         axs[1].set_ylabel("Depth Level")
         axs[1].set_xlabel("Salinity")
-        axs[1].legend()
+        axs[1].legend(loc='lower right')
+        axs[1].grid()
 
         plt.tight_layout()
         plt.show()
-
+        
 #%%
 if __name__ == "__main__":
     # Configurable parameters
     data_path = "/home/jmiranda/SubsurfaceFields/Data/ARGO_GoM_20220920.mat"
     epochs = 500
     patience = 15
-    n_components = 15
+    n_components = 12
     batch_size = 100
     learning_rate = 0.001
     layers_config = [100, 100]
     input_params = {
-        "time": False,
+        "time": True,
         "lat": False,
         "lon": False,
         "sst": True,
         "ssh": True
     }
+    train_size = 0.8
+    val_size = 0.1
+    test_size = 0.1
 
-    # Load data
-    dataset = TemperatureSalinityDataset(path=data_path, n_components=n_components, input_params=input_params)
+    # Load and split data
+    full_dataset = TemperatureSalinityDataset(path=data_path, n_components=n_components, input_params=input_params)
+    train_dataset, val_dataset, test_dataset = split_dataset(full_dataset, train_size, val_size, test_size)
+
+    # Dataloaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Compute the input dimension dynamically
     input_dim = sum(val for val in input_params.values())
-
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-    # dataset = TemperatureSalinityDataset(path=data_path)
-    # # Initialize model, criterion, and optimizer
-    # model = PredictionModel(input_dim=1, layers_config=layers_config, output_dim=30)
-    
     model = PredictionModel(input_dim=input_dim, layers_config=layers_config, output_dim=n_components*2)
     
     # Check CUDA availability
@@ -345,45 +418,25 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     # Training
-    trained_model = train_model(model, dataloader, criterion, optimizer, device, epochs, patience)
+    trained_model = train_model(model, train_loader, val_loader, criterion, optimizer, device, epochs, patience)
     
-    # Evaluation
-    loss = evaluate_model(trained_model, dataloader, criterion, device)
-    print(f"Evaluation Loss: {loss:.4f}")
+    # Test evaluation
+    test_loss = evaluate_model(trained_model, test_loader, criterion, device)
+    print(f"Test Loss: {test_loss:.4f}")
 
-    # Get predictions
-    true_profiles, predicted_profiles = [], []
-    last_true_profile, last_predicted_profile = None, None
+    # Get predictions for the validation dataset
+    val_predictions_pcs = get_predictions(trained_model, val_loader, device)
+    # Accessing the original dataset for inverse_transform
+    val_predictions = val_dataset.dataset.inverse_transform(val_predictions_pcs)
 
-    with torch.no_grad():
-        for i, (inputs, labels) in enumerate(dataloader):
-            inputs = inputs.to(device)
-            predicted_pcs = trained_model(inputs).cpu()
-            true_temp, true_sal = dataset.inverse_transform(labels)
-            pred_temp, pred_sal = dataset.inverse_transform(predicted_pcs)
+    subset_indices = val_loader.dataset.indices
 
-            # Convert numpy arrays to tensors
-            true_temp_tensor = torch.tensor(true_temp)
-            true_sal_tensor = torch.tensor(true_sal)
-            pred_temp_tensor = torch.tensor(pred_temp)
-            pred_sal_tensor = torch.tensor(pred_sal)
+    # For original profiles
+    original_profiles = val_dataset.dataset.get_profiles(subset_indices, pca_approx=False)
 
-            # Stack along dimension 1
-            if i < len(dataloader) - 1:  # for all batches except the last one
-                true_profiles.append(torch.stack([true_temp_tensor, true_sal_tensor], dim=1))
-                predicted_profiles.append(torch.stack([pred_temp_tensor, pred_sal_tensor], dim=1))
-            else:  # specifically handle the last batch
-                last_true_profile = torch.stack([true_temp_tensor, true_sal_tensor], dim=1)
-                last_predicted_profile = torch.stack([pred_temp_tensor, pred_sal_tensor], dim=1)
+    # For PCA approximated profiles
+    pca_approx_profiles = val_dataset.dataset.get_profiles(subset_indices, pca_approx=True)
 
-    # Concatenate tensors outside the loop
-    true_profiles = torch.cat(true_profiles, dim=0)
-    predicted_profiles = torch.cat(predicted_profiles, dim=0)
-
-    # Now, true_profiles and predicted_profiles don't include the last batch.
-    # last_true_profile and last_predicted_profile contain the tensors for the last batch.
-
-    # Visualization
-    visualize_results(true_profiles, predicted_profiles)
-
+    # Visualize the results for the validation dataset
+    visualize_results_with_original(original_profiles, pca_approx_profiles, val_predictions)
     #%%
