@@ -199,13 +199,13 @@ density_grid_new = griddata(
 )
 
 # Plot the properties using the new interpolated grids
-fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(14, 15))
+fig, axs = plt.subplots(nrows=2, ncols=1, figsize=(14, 15))
 
 plot_filled_contour(X_new, Z_new, temperature_grid_new, 'Temperature ($^\circ$C)', ccm.thermal, 'Temperature ($^\circ$C)', axs[0])
 plot_filled_contour(X_new, Z_new, salinity_grid_new, 'Salinity (PSU)', ccm.haline, 'Salinity (PSU)', axs[1])
-plot_filled_contour(X_new, Z_new, density_grid_new, 'Density (kg/m$^3$)', 'hot_r', 'Density (kg/m$^3$)', axs[2])
+# plot_filled_contour(X_new, Z_new, density_grid_new, 'Density (kg/m$^3$)', 'hot_r', 'Density (kg/m$^3$)', axs[2])
 # Repeat for salinity and density with their respective new grids
-plt.suptitle('Straight projection of the Track\n', fontsize=18, fontweight='bold')
+plt.suptitle('Glider track\n\n\n', fontsize=18, fontweight='bold')
 plt.tight_layout()
 plt.grid(True)
 plt.show()

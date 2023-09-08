@@ -15,6 +15,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from sklearn.decomposition import PCA
 from torch.utils.data import random_split
+import pickle
 
 class TemperatureSalinityDataset(torch.utils.data.Dataset):
     """
@@ -243,6 +244,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, e
     """
     model.to(device)
     best_val_loss = float('inf')
+    best_weights = None  # To store best model weights
     no_improve_count = 0
 
     for epoch in range(epochs):
@@ -272,6 +274,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, e
         # Check for early stopping
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
+            best_weights = model.state_dict()  # Save the model weights
             no_improve_count = 0
         else:
             no_improve_count += 1
@@ -279,6 +282,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, e
                 print(f"Early stopping at Epoch {epoch + 1}")
                 break
 
+    model.load_state_dict(best_weights)  # Load the best model weights
     return model
 
 def evaluate_model(model, dataloader, criterion, device):
@@ -377,6 +381,44 @@ def visualize_results_with_original(true_values, pca_approx, predicted_values, n
         plt.tight_layout()
         plt.show()
         
+def predict_with_numpy(model, numpy_input, device="cuda"):
+    # Convert numpy array to tensor
+    tensor_input = torch.tensor(numpy_input, dtype=torch.float32)
+    
+    # Check if CUDA is available and move tensor to the appropriate device
+    if device == "cuda" and torch.cuda.is_available():
+        tensor_input = tensor_input.cuda()
+        model = model.cuda()
+    
+    # Make sure the model is in evaluation mode
+    model.eval()
+    
+    # Make predictions
+    with torch.no_grad():
+        predictions = model(tensor_input)
+    
+    # Convert predictions back to numpy (if on GPU, move to CPU first)
+    numpy_predictions = predictions.cpu().numpy()
+    
+    return numpy_predictions
+
+def inverse_transform(pcs, pca_temp, pca_sal, n_components):
+    """
+    Inverse the PCA transformation.
+
+    Args:
+    - pcs (numpy.ndarray): Concatenated PCA components for temperature and salinity.
+    - pca_temp, pca_sal: PCA models for temperature and salinity respectively.
+    - n_components (int): Number of PCA components.
+
+    Returns:
+    - tuple: Inversed temperature and salinity profiles.
+    """
+    temp_profiles = pca_temp.inverse_transform(pcs[:, :n_components]).T
+    sal_profiles = pca_sal.inverse_transform(pcs[:, n_components:]).T
+    return temp_profiles, sal_profiles
+
+
 #%%
 if __name__ == "__main__":
     # Configurable parameters
@@ -439,4 +481,13 @@ if __name__ == "__main__":
 
     # Visualize the results for the validation dataset
     visualize_results_with_original(original_profiles, pca_approx_profiles, val_predictions)
-    #%%
+
+    torch.save(trained_model, "model.pth")
+    
+    with open("pca_temp.pkl", "wb") as f:
+        pickle.dump(full_dataset.pca_temp, f)
+
+    with open("pca_sal.pkl", "wb") as f:
+        pickle.dump(full_dataset.pca_sal, f)
+
+# %%

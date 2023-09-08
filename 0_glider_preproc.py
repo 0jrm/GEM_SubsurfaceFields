@@ -20,7 +20,7 @@ from viz_utils.eoa_viz import select_colormap, EOAImageVisualizer
 from viz_utils.eoas_viz_3d import ImageVisualizer3D
 from viz_utils.constants import PlotMode
 
-processed =  True
+processed =  False
 
 def load_join_clean(path, files, variables, num_files=None):
     """Load, joins and remove NaNs from multiple NetCDF files.
@@ -219,6 +219,7 @@ plot_MLD_profile(ds,2)
 # %%
 # AVISO Data
 aviso_folder = "/unity/f1/ozavala/DATA/GOFFISH/AVISO/GoM/"
+sst_folder = "/unity/f1/ozavala/DATA/GOFFISH/SST/OISST"
 bbox = [17.5, 32.5, -110, -80]
 start_date = datetime.datetime(2016, 8, 6)
 end_date = datetime.datetime(2016, 9, 5)
@@ -235,13 +236,18 @@ additional_data = []
 while date_of_interest <= end_date:
     date_string = date_of_interest.strftime("%Y-%m-%d")
     aviso_data, grid_lats, grid_lons = get_aviso_by_date(aviso_folder, date_of_interest, bbox)
+    if date_of_interest == datetime.datetime(2016, 8, 12, 0, 0):
+        sst_data, grid_lats_sst, grid_lons_sst = get_sst_by_date(sst_folder, date_of_interest-delta, bbox)
+    else:
+        sst_data, grid_lats_sst, grid_lons_sst = get_sst_by_date(sst_folder, date_of_interest, bbox)
+    
     profiles_on_date = ds[ds['date'] == date_of_interest.date()]['profile_id'].unique()
     position_on_date = position.loc[profiles_on_date]
     viz_obj = EOAImageVisualizer(lats=grid_lats, lons=grid_lons, disp_images=True, output_folder="outputs", show_var_names=True)
     prof_lat = position_on_date['lat'].values
     prof_lon = position_on_date['lon'].values
     profile_ssh = get_prof_ssh_from_aviso(prof_lat, prof_lon, aviso_data.adt, grid_lats, grid_lons)
-    
+    profile_sst = get_prof_ssh_from_aviso(prof_lat, prof_lon, sst_data.analysed_sst[0], grid_lats_sst, grid_lons_sst)
     plot_points = [Point(lon, lat) for lat, lon in zip(prof_lat, prof_lon)]
     viz_obj.__setattr__('additional_polygons', plot_points)
     viz_obj.plot_2d_data_np(aviso_data.adt, ['adt'], f'- glider profiles on {date_string}', 'filepref')
@@ -257,15 +263,17 @@ while date_of_interest <= end_date:
         'profile_id': profiles_on_date,
         'lat_position': prof_lat,
         'lon_position': prof_lon,
-        'AVISO_SSH': profile_ssh
+        'AVISO_SSH': profile_ssh,
+        'SST' : profile_sst
     })
 
-    for lat, lon, ssh, profile_id in zip(prof_lat, prof_lon, profile_ssh, profiles_on_date):
+    for lat, lon, ssh, sst, profile_id in zip(prof_lat, prof_lon, profile_ssh, profile_sst, profiles_on_date):
         additional_data.append({
             'profile_id': profile_id,
             'lat_position': lat,
             'lon_position': lon,
-            'AVISO_SSH': ssh
+            'AVISO_SSH': ssh,
+            'SST' : sst
         })
     
     date_of_interest += delta
