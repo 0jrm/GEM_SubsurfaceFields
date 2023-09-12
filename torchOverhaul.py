@@ -51,6 +51,7 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
                 "lat": False,
                 "lon": False,
                 "sst": True,  # First value of temperature
+                "sss": True,
                 "ssh": True
             }
 
@@ -75,6 +76,9 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
 
         if self.input_params["lon"]:
             inputs.append(self.LON[idx])  # assuming LON is available in your dataset
+            
+        if self.input_params["sss"]:
+            inputs.append(self.SAL[0, idx])
 
         if self.input_params["sst"]:
             inputs.append(self.TEMP[0, idx])  # First value of temperature profile
@@ -179,7 +183,7 @@ class PredictionModel(nn.Module):
     - forward(x: torch.Tensor) -> torch.Tensor: Forward pass through the model.
     """
 
-    def __init__(self, input_dim=1, layers_config=[512, 256], output_dim=30):
+    def __init__(self, input_dim=1, layers_config=[512, 256], output_dim=30, dropout_prob = 0.5):
         super(PredictionModel, self).__init__()
         
         # Construct layers based on the given configuration
@@ -187,13 +191,12 @@ class PredictionModel(nn.Module):
         prev_dim = input_dim
         for neurons in layers_config:
             layers.append(nn.Linear(prev_dim, neurons))
-            # layers.append(nn.Tanh())
-            # layers.append(nn.Sigmoid())
             layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_prob)) # added dropout
             prev_dim = neurons
         layers.append(nn.Linear(prev_dim, output_dim))
         
-        self.model = nn.Sequential(*layers)
+        self.model = nn.Sequential(*layers)      
     
     def forward(self, x):
         """
@@ -351,14 +354,19 @@ def visualize_results_with_original(true_values, pca_approx, predicted_values, n
     """
     n_depths = 2001
     depth_levels = np.arange(n_depths)
-    indices = np.random.choice(int(true_values.shape[2]), num_samples, replace=False)
+    population_size = true_values.shape[2]
+    
+    if num_samples == population_size:
+        indices = np.arange(num_samples)
+    else:
+        indices = np.random.choice(int(population_size), num_samples, replace=False)
 
     for idx in indices:
         fig, axs = plt.subplots(1, 2, figsize=(12, 6))
         
         # Temperature profile
-        axs[0].plot(true_values[:,0, idx], depth_levels, label="Original")
         axs[0].plot(pca_approx[:, 0, idx], depth_levels, label="PCA Approximation")
+        axs[0].plot(true_values[:,0, idx], depth_levels, label="Original")
         axs[0].plot(predicted_values[0][:, idx], depth_levels, label="NN Predicted")
         axs[0].invert_yaxis()  # To have the surface (depth=0) on top
         axs[0].set_title(f"Temperature Profile {idx}")
@@ -368,8 +376,8 @@ def visualize_results_with_original(true_values, pca_approx, predicted_values, n
         axs[0].grid()
 
         # Salinity profile
-        axs[1].plot(true_values[:,1, idx], depth_levels, label="Original")
         axs[1].plot(pca_approx[:, 1, idx], depth_levels, label="PCA Approximation")
+        axs[1].plot(true_values[:,1, idx], depth_levels, label="Original")
         axs[1].plot(predicted_values[1][:, idx], depth_levels, label="Predicted")
         axs[1].invert_yaxis()  # To have the surface (depth=0) on top
         axs[1].set_title(f"Salinity Profile {idx}")
@@ -424,17 +432,19 @@ if __name__ == "__main__":
     # Configurable parameters
     data_path = "/home/jmiranda/SubsurfaceFields/Data/ARGO_GoM_20220920.mat"
     epochs = 500
-    patience = 15
-    n_components = 12
-    batch_size = 100
+    patience = 20
+    n_components = 16
+    batch_size = 128
     learning_rate = 0.001
-    layers_config = [100, 100]
+    dropout_prob = 0.2
+    layers_config = [256, 256]
     input_params = {
-        "time": True,
-        "lat": False,
-        "lon": False,
-        "sst": True,
-        "ssh": True
+        "time": False,
+        "lat" : False,
+        "lon" : False,
+        "sss" : False,
+        "sst" : True,
+        "ssh" : True
     }
     train_size = 0.8
     val_size = 0.1
@@ -451,13 +461,27 @@ if __name__ == "__main__":
 
     # Compute the input dimension dynamically
     input_dim = sum(val for val in input_params.values())
-    model = PredictionModel(input_dim=input_dim, layers_config=layers_config, output_dim=n_components*2)
+    model = PredictionModel(input_dim=input_dim, layers_config=layers_config, output_dim=n_components*2, dropout_prob = dropout_prob)
     
     # Check CUDA availability
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # print parameters and dataset size
+    true_params = [param for param, value in input_params.items() if value]
+    def printParams():   
+        print(f"\nNumber of profiles: {len(full_dataset)}")
+        print("Parameters used:", ", ".join(true_params))
+        print(f"Number of components used: {n_components} x2")
+        print(f"Batch size: {batch_size}")
+        print(f"Learning rate: {learning_rate}")
+        print(f"Dropout probability: {dropout_prob}")
+        print(f'Train/test/validation split: {train_size}/{test_size}/{val_size}')
+        print(f"Layer configuration: {layers_config}\n")
+    
+    printParams()
 
     # Training
     trained_model = train_model(model, train_loader, val_loader, criterion, optimizer, device, epochs, patience)
@@ -479,8 +503,9 @@ if __name__ == "__main__":
     # For PCA approximated profiles
     pca_approx_profiles = val_dataset.dataset.get_profiles(subset_indices, pca_approx=True)
 
+    num_samples = val_predictions[0].shape[1]
     # Visualize the results for the validation dataset
-    visualize_results_with_original(original_profiles, pca_approx_profiles, val_predictions)
+    visualize_results_with_original(original_profiles, pca_approx_profiles, val_predictions, num_samples=num_samples)
 
     torch.save(trained_model, "model.pth")
     
@@ -489,5 +514,8 @@ if __name__ == "__main__":
 
     with open("pca_sal.pkl", "wb") as f:
         pickle.dump(full_dataset.pca_sal, f)
+        
+    printParams()
+        
 
 # %%
