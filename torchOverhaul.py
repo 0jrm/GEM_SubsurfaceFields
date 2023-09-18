@@ -30,12 +30,15 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
     - temp_pcs: Transformed temperature profiles using PCA.
     - sal_pcs: Transformed salinity profiles using PCA.
     """
-    def __init__(self, path, n_components=15, input_params=None):
+    def __init__(self, path, n_components=15, input_params=None, max_depth = 2000, pred_temp = True, pred_sal = True):
         """
         Args:
         - path (str): File path to the dataset.
         - n_components (int): Number of PCA components to retain.
         """
+        self.max_depth = max_depth
+        self.pred_temp = pred_temp
+        self.pred_sal = pred_sal
         data = mat73.loadmat(path)
         # Filtering profiles
         valid_mask = self._get_valid_mask(data)
@@ -93,14 +96,14 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
     
     def _get_valid_mask(self, data):
         """Internal method to get mask of valid profiles based on missing values."""
-        temp_mask = np.sum(np.isnan(data['TEMP']), axis=0) <= 10
-        sal_mask = np.sum(np.isnan(data['SAL']), axis=0) <= 10
+        temp_mask = np.sum(np.isnan(data['TEMP']), axis=0) <= 5
+        sal_mask = np.sum(np.isnan(data['SAL']), axis=0) <= 5
         return np.logical_and(temp_mask, sal_mask)
     
     def _filter_and_fill_data(self, data, valid_mask):
         """Internal method to filter data using the mask and fill missing values."""
-        TEMP = data['TEMP'][:, valid_mask]
-        SAL = data['SAL'][:, valid_mask]
+        TEMP = data['TEMP'][:self.max_depth+1, valid_mask]
+        SAL = data['SAL'][:self.max_depth+1, valid_mask]
         SSH = data['SH1950'][valid_mask]
         TIME = data['TIME'][valid_mask]
         LAT = data['LAT'][valid_mask]
@@ -192,7 +195,8 @@ class PredictionModel(nn.Module):
         for neurons in layers_config:
             layers.append(nn.Linear(prev_dim, neurons))
             layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout_prob)) # added dropout
+            if dropout_prob > 0:
+                layers.append(nn.Dropout(dropout_prob)) # added dropout
             prev_dim = neurons
         layers.append(nn.Linear(prev_dim, output_dim))
         
@@ -210,7 +214,7 @@ class PredictionModel(nn.Module):
         """
         return self.model(x)
     
-def split_dataset(dataset, train_size, val_size, test_size):
+def split_dataset(dataset, train_size, val_size, test_size, batch_size=32, use_batches=True):
     """
     Splits the dataset into training, validation, and test sets.
     
@@ -338,56 +342,6 @@ def get_predictions(model, dataloader, device):
             predictions.extend(outputs.cpu().numpy())
 
     return np.array(predictions)
-
-def visualize_results_with_original(true_values, pca_approx, predicted_values, num_samples=5):
-    """
-    Visualize the true vs. predicted vs. PCA approximated values for a sample of profiles.
-
-    Parameters:
-    - true_values: ground truth temperature and salinity profiles.
-    - pca_approx: PCA approximated temperature and salinity profiles.
-    - predicted_values: model's predicted temperature and salinity profiles.
-    - num_samples: number of random profiles to visualize.
-
-    Returns:
-    - None (plots the results).
-    """
-    n_depths = 2001
-    depth_levels = np.arange(n_depths)
-    population_size = true_values.shape[2]
-    
-    if num_samples == population_size:
-        indices = np.arange(num_samples)
-    else:
-        indices = np.random.choice(int(population_size), num_samples, replace=False)
-
-    for idx in indices:
-        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-        
-        # Temperature profile
-        axs[0].plot(pca_approx[:, 0, idx], depth_levels, label="PCA Approximation")
-        axs[0].plot(true_values[:,0, idx], depth_levels, label="Original")
-        axs[0].plot(predicted_values[0][:, idx], depth_levels, label="NN Predicted")
-        axs[0].invert_yaxis()  # To have the surface (depth=0) on top
-        axs[0].set_title(f"Temperature Profile {idx}")
-        axs[0].set_ylabel("Depth Level")
-        axs[0].set_xlabel("Temperature")
-        axs[0].legend(loc='lower right')
-        axs[0].grid()
-
-        # Salinity profile
-        axs[1].plot(pca_approx[:, 1, idx], depth_levels, label="PCA Approximation")
-        axs[1].plot(true_values[:,1, idx], depth_levels, label="Original")
-        axs[1].plot(predicted_values[1][:, idx], depth_levels, label="Predicted")
-        axs[1].invert_yaxis()  # To have the surface (depth=0) on top
-        axs[1].set_title(f"Salinity Profile {idx}")
-        axs[1].set_ylabel("Depth Level")
-        axs[1].set_xlabel("Salinity")
-        axs[1].legend(loc='lower right')
-        axs[1].grid()
-
-        plt.tight_layout()
-        plt.show()
         
 def predict_with_numpy(model, numpy_input, device="cuda"):
     # Convert numpy array to tensor
@@ -426,18 +380,69 @@ def inverse_transform(pcs, pca_temp, pca_sal, n_components):
     sal_profiles = pca_sal.inverse_transform(pcs[:, n_components:]).T
     return temp_profiles, sal_profiles
 
+def visualize_results_with_original(true_values, pca_approx, predicted_values, max_depth=2000,  num_samples=5):
+    """
+    Visualize the true vs. predicted vs. PCA approximated values for a sample of profiles.
+
+    Parameters:
+    - true_values: ground truth temperature and salinity profiles.
+    - pca_approx: PCA approximated temperature and salinity profiles.
+    - predicted_values: model's predicted temperature and salinity profiles.
+    - num_samples: number of random profiles to visualize.
+
+    Returns:
+    - None (plots the results).
+    """
+    n_depths = max_depth + 1
+    depth_levels = np.arange(n_depths)
+    population_size = true_values.shape[2]
+    
+    if num_samples == population_size:
+        indices = np.arange(num_samples)
+    else:
+        indices = np.random.choice(int(population_size), num_samples, replace=False)
+
+    for idx in indices:
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+        
+        # Temperature profile
+        axs[0].plot(pca_approx[:, 0, idx], depth_levels, label="PCA Approximation")
+        axs[0].plot(true_values[:,0, idx], depth_levels, label="Original")
+        axs[0].plot(predicted_values[0][:, idx], depth_levels, label="NN Predicted")
+        axs[0].invert_yaxis()  # To have the surface (depth=0) on top
+        axs[0].set_title(f"Temperature Profile {idx}")
+        axs[0].set_ylabel("Depth Level")
+        axs[0].set_xlabel("Temperature")
+        axs[0].legend(loc='lower right')
+        axs[0].grid()
+
+        # Salinity profile
+        axs[1].plot(pca_approx[:, 1, idx], depth_levels, label="PCA Approximation")
+        axs[1].plot(true_values[:,1, idx], depth_levels, label="Original")
+        axs[1].plot(predicted_values[1][:, idx], depth_levels, label="Predicted")
+        axs[1].invert_yaxis()  # To have the surface (depth=0) on top
+        axs[1].set_title(f"Salinity Profile {idx}")
+        axs[1].set_ylabel("Depth Level")
+        axs[1].set_xlabel("Salinity")
+        axs[1].legend(loc='lower right')
+        axs[1].grid()
+
+        plt.tight_layout()
+        plt.show()
+
 
 #%%
 if __name__ == "__main__":
     # Configurable parameters
     data_path = "/home/jmiranda/SubsurfaceFields/Data/ARGO_GoM_20220920.mat"
+    max_depth = 2000
     epochs = 500
-    patience = 20
+    patience = 30
     n_components = 16
-    batch_size = 128
+    batch_size = 100
     learning_rate = 0.001
     dropout_prob = 0.2
-    layers_config = [256, 256]
+    layers_config = [512, 512]
     input_params = {
         "time": False,
         "lat" : False,
@@ -451,7 +456,7 @@ if __name__ == "__main__":
     test_size = 0.1
 
     # Load and split data
-    full_dataset = TemperatureSalinityDataset(path=data_path, n_components=n_components, input_params=input_params)
+    full_dataset = TemperatureSalinityDataset(path=data_path, n_components=n_components, input_params=input_params, max_depth=max_depth)
     train_dataset, val_dataset, test_dataset = split_dataset(full_dataset, train_size, val_size, test_size)
 
     # Dataloaders
@@ -474,6 +479,7 @@ if __name__ == "__main__":
     def printParams():   
         print(f"\nNumber of profiles: {len(full_dataset)}")
         print("Parameters used:", ", ".join(true_params))
+        print(f"Max depth: {max_depth}")
         print(f"Number of components used: {n_components} x2")
         print(f"Batch size: {batch_size}")
         print(f"Learning rate: {learning_rate}")
@@ -503,9 +509,10 @@ if __name__ == "__main__":
     # For PCA approximated profiles
     pca_approx_profiles = val_dataset.dataset.get_profiles(subset_indices, pca_approx=True)
 
-    num_samples = val_predictions[0].shape[1]
+    # num_samples = val_predictions[0].shape[1]
+    num_samples = 10    
     # Visualize the results for the validation dataset
-    visualize_results_with_original(original_profiles, pca_approx_profiles, val_predictions, num_samples=num_samples)
+    visualize_results_with_original(original_profiles, pca_approx_profiles, val_predictions, max_depth = max_depth, num_samples=num_samples)
 
     torch.save(trained_model, "model.pth")
     
@@ -516,6 +523,4 @@ if __name__ == "__main__":
         pickle.dump(full_dataset.pca_sal, f)
         
     printParams()
-        
-
 # %%
