@@ -1,4 +1,5 @@
 #%%
+# https://www.perplexity.ai/search/728e80b0-2a4d-4b0f-a5d1-0065f1aa7659?s=u
 import sys
 import os
 import numpy as np
@@ -17,8 +18,9 @@ import cartopy.crs as ccrs
 from datetime import datetime, timedelta
 # from matplotlib.dates import date2num, num2date
 # from sklearn.cluster import MiniBatchKMeans
-sys.path.append("/home/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/eoas_pyutils/")
+sys.path.append("/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/eoas_pyutils/")
 from io_utils.coaps_io_data import get_aviso_by_date, get_sst_by_date, get_sss_by_date
+sys.path.append("/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/")
 
 def datenum_to_datetime(matlab_datenum):
     # MATLAB's datenum (1) is equivalent to January 1, year 0000, but Python's datetime minimal year is 1
@@ -67,8 +69,10 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
             input_params = {
                 "timecos": False,
                 "timesin": False,
-                "lat": False,
-                "lon": False,
+                "latcos": False,
+                "latsin": False,
+                "loncos": False,
+                "lonsin": False,
                 "sst": True,  # First value of temperature
                 "sss": True,
                 "ssh": True
@@ -80,7 +84,7 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         self.SST, self.SSH = self._load_sst_ssh_data()
         
         valid_mask = self._get_valid_mask(data)
-        self.TEMP, self.SAL, self.SSH, self.SST, self.TIME, self.LAT, self.LON = self._filter_and_fill_data(data, valid_mask)
+        self.TEMP, self.SAL, self.SSH, self.SST, self.TIME, self.LAT, self.LON, self.ADT = self._filter_and_fill_data(data, valid_mask)
         
         # Applying PCA
         self.temp_pcs, self.pca_temp = self._apply_pca(self.TEMP, n_components)
@@ -144,17 +148,23 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         if self.input_params["timesin"]:
             inputs.append(np.sin(2*np.pi*(self.TIME[idx]%365)/365))  
         
-        if self.input_params["lat"]:
-            inputs.append(self.LAT[idx])  
+        if self.input_params["latcos"]:
+            inputs.append(np.cos(2*np.pi*(self.LAT[idx]/180)))
 
-        if self.input_params["lon"]:
-            inputs.append(self.LON[idx])  
+        if self.input_params["latsin"]:
+            inputs.append(np.sin(2*np.pi*(self.LAT[idx]/180)))  
+
+        if self.input_params["loncos"]:
+            inputs.append(np.cos(2*np.pi*(self.LON[idx]/360)))  
             
+        if self.input_params["loncos"]:
+            inputs.append(np.sin(2*np.pi*(self.LON[idx]/360)))
+                
         if self.input_params["sss"]:
             inputs.append(self.SAL[0, idx])
 
         if self.input_params["sst"]:
-            inputs.append(self.SST[idx])  # First value of temperature profile
+            inputs.append(self.TEMP[0, idx])  # First value of temperature profile
         
         if self.input_params["ssh"]:
             inputs.append(self.SSH[idx])
@@ -192,6 +202,7 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         TIME = data['TIME'][valid_mask]
         LAT = data['LAT'][valid_mask]
         LON = data['LON'][valid_mask]
+        ADT = data['ADTnoseason_loc'][valid_mask]
         
         # Fill missing values using interpolation
         for i in range(TEMP.shape[1]):
@@ -210,7 +221,7 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         #     TEMP = convolve2d(TEMP, filter_weights, boundary='symm', mode='same')
         #     SAL = convolve2d(SAL, filter_weights, boundary='symm', mode='same') 
         
-        return TEMP, SAL, SSH, SST, TIME, LAT, LON
+        return TEMP, SAL, SSH, SST, TIME, LAT, LON, ADT
 
     def _apply_pca(self, data, n_components):
         """Internal method to apply PCA transformation to the data."""
@@ -262,7 +273,7 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
 
         return profiles_array
     
-    def get_gem_profiles(self, indices, filename='/home/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/GEM_polyfits.pkl'):
+    def get_gem_profiles(self, indices, sat_ssh = False, filename='/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/GEM_polyfits.pkl'):
         # Load GEM polyfits from file
         with open(filename, 'rb') as f:
             gem_polyfits = pickle.load(f)
@@ -271,11 +282,17 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         temp_GEM = np.empty((len(indices), self.max_depth+1))
         sal_GEM = np.empty((len(indices), self.max_depth+1))
 
+        if sat_ssh:
+            # ssh = self.SSH[indices] 
+            ssh = 2668.9* self.SSH[indices]  + 4214.1
+        else:
+            ssh = self.ADT[indices]
+        
         # For each pressure level
         for i in range(len(gem_polyfits['TEMP'])):
             # Evaluate the fitted polynomial at the given SSH values
-            temp_GEM[:, i] = gem_polyfits['TEMP'][i](self.SSH[indices])
-            sal_GEM[:, i] = gem_polyfits['SAL'][i](self.SSH[indices])
+            temp_GEM[:, i] = gem_polyfits['TEMP'][i](ssh)
+            sal_GEM[:, i] = gem_polyfits['SAL'][i](ssh)
         
         # Interpolate missing values in temp_GEM and sal_GEM
         for array in [temp_GEM, sal_GEM]:
@@ -415,7 +432,9 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, e
         
         # Validation loss
         avg_val_loss = evaluate_model(model, val_loader, criterion, device)
-        print(f"Epoch [{epoch + 1}/{epochs}] Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        
+        if epoch == 0 or epoch%10==9:
+            print(f"Epoch [{epoch + 1}/{epochs}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Patience: {patience - no_improve_count} | Best: {best_val_loss:.4f}")
 
         # Check for early stopping
         if avg_val_loss < best_val_loss:
@@ -558,7 +577,41 @@ def genWeightedMSELoss(n_components, device, offset = 3):
     weights = torch.tensor(np.concatenate([single_set_weights, single_set_weights]))
     return WeightedMSELoss(weights, device)
    
-def visualize_combined_results(true_values, gem_temp, gem_sal, predicted_values, sst_values, ssh_values, max_depth=2000, num_samples=5):
+# Define a custom loss function
+class PCALoss(nn.Module):
+    def __init__(self, temp_pca, sal_pca, n_components):
+        super(PCALoss, self).__init__()
+        self.n_components = n_components
+        # convert PCS to tensors
+        self.temp_pca_components = torch.nn.Parameter(torch.from_numpy(temp_pca.temp_pcs).float().to('cuda'), requires_grad=False)
+        # self.temp_pca_mean = torch.nn.Parameter(torch.from_numpy(temp_pca.mean_).float().to('cuda'), requires_grad=False)
+        self.sal_pca_components = torch.nn.Parameter(torch.from_numpy(sal_pca.sal_pcs).float().to('cuda'), requires_grad=False)
+        # self.sal_pca_mean = torch.nn.Parameter(torch.from_numpy(sal_pca.mean_).float().to('cuda'), requires_grad=False)
+
+    def inverse_transform(self, pcs, pca_components):
+        # Perform the inverse transform using PyTorch operations
+        return torch.mm(pcs, pca_components) # + pca_mean
+
+    def forward(self, pcs, targets):
+        # Split the predicted and true pcs for temp and sal
+        pred_temp_pcs, pred_sal_pcs = pcs[:, :self.n_components], pcs[:, self.n_components:]
+        true_temp_pcs, true_sal_pcs = targets[:, :self.n_components], targets[:, self.n_components:]
+        
+        # Inverse transform the PCA components to get the profiles
+        pred_temp_profiles = self.inverse_transform(pred_temp_pcs, self.temp_pca_components)
+        pred_sal_profiles = self.inverse_transform(pred_sal_pcs, self.sal_pca_components)
+        true_temp_profiles = self.inverse_transform(true_temp_pcs, self.temp_pca_components)
+        true_sal_profiles = self.inverse_transform(true_sal_pcs, self.sal_pca_components)
+        
+        # Calculate the Mean Squared Error between the predicted and true profiles
+        mse_temp = nn.functional.mse_loss(pred_temp_profiles, true_temp_profiles)
+        mse_sal = nn.functional.mse_loss(pred_sal_profiles, true_sal_profiles)
+        
+        # Combine the MSE for temperature and salinity
+        total_mse = mse_temp/(8**2) + mse_sal/(35**2)
+        return total_mse
+
+def visualize_combined_results(true_values, gem_temp, gem_sal, predicted_values, sst_values, ssh_values, max_depth=2000, num_samples=5, limit_depth = 150):
     # TODO: add date to plot
     """
     Visualize the true vs. predicted vs. GEM approximated values for a sample of profiles and their differences.
@@ -612,9 +665,13 @@ def visualize_combined_results(true_values, gem_temp, gem_sal, predicted_values,
 
         # Second row: Differences
         gem_temp_dif = gem_temp[idx]-true_values[:,0, idx]
+        gem_temp_dif **= 2
         gem_sal_dif = gem_sal[idx]-true_values[:,1, idx]
+        gem_sal_dif**= 2
         nn_temp_dif = predicted_values[0][:, idx]-true_values[:,0, idx]
+        nn_temp_dif**= 2
         nn_sal_dif = predicted_values[1][:, idx]-true_values[:,1, idx]
+        nn_sal_dif**= 2
         
         axs[1][0].plot(gem_temp_dif, depth_levels, 'g', label="GEM Profile", alpha = 0.75)
         axs[1][0].plot(nn_temp_dif, depth_levels, 'r', label="NN Profile", alpha = 0.75)
@@ -622,7 +679,7 @@ def visualize_combined_results(true_values, gem_temp, gem_sal, predicted_values,
         axs[1][0].invert_yaxis()
         axs[1][0].set_title(f"Temperature Differences")
         axs[1][0].set_ylabel("Depth")
-        axs[1][0].set_xlabel("Temperature Difference")
+        axs[1][0].set_xlabel("Squared Differences (°C²)")
         axs[1][0].legend(loc='best')
         axs[1][0].grid(color='gray', linestyle='--', linewidth=0.5)
 
@@ -633,7 +690,7 @@ def visualize_combined_results(true_values, gem_temp, gem_sal, predicted_values,
         axs[1][1].invert_yaxis()
         axs[1][1].set_title(f"Salinity Differences")
         axs[1][1].set_ylabel("Depth")
-        axs[1][1].set_xlabel("Salinity Difference")
+        axs[1][1].set_xlabel("Squared Differences (PSU²)")
         axs[1][1].legend(loc='best')
         axs[1][1].grid(color='gray', linestyle='--', linewidth=0.5)
 
@@ -658,6 +715,27 @@ def visualize_combined_results(true_values, gem_temp, gem_sal, predicted_values,
 
     nn_temp_errors = (predicted_values[0][:, :] - true_values[:, 0, :]) ** 2
     nn_sal_errors = (predicted_values[1][:, :] - true_values[:, 1, :]) ** 2
+        
+    gem_temp_rmse = np.sqrt(np.mean(gem_temp_errors))
+    gem_sal_rmse = np.sqrt(np.mean(gem_sal_errors))
+
+    nn_temp_rmse = np.sqrt(np.mean(nn_temp_errors))
+    nn_sal_rmse = np.sqrt(np.mean(nn_sal_errors))
+
+    accuracy_gain_temp = 100*(gem_temp_rmse-nn_temp_rmse)/gem_temp_rmse
+    accuracy_gain_sal = 100*(gem_sal_rmse-nn_sal_rmse)/gem_sal_rmse
+    
+    print(f"Average temperature RMSE: {nn_temp_rmse:.3f}%")
+    print(f"Average salinity RMSE: {nn_sal_rmse:.3f}%")
+    
+    print(f"Average temperature accuracy gain: {accuracy_gain_temp:.3f}% (entire depth range)")
+    print(f"Average salinity accuracy gain: {accuracy_gain_sal:.3f}% (entire depth range)")
+
+    gem_temp_errors = (gem_temp.T[150:,:] - true_values[150:, 0, :]) ** 2
+    gem_sal_errors = (gem_sal.T[150:,:] - true_values[150:, 1, :]) ** 2
+
+    nn_temp_errors = (predicted_values[0][150:, :] - true_values[150:, 0, :]) ** 2
+    nn_sal_errors = (predicted_values[1][150:, :] - true_values[150:, 1, :]) ** 2
 
     gem_temp_rmse = np.sqrt(np.mean(gem_temp_errors))
     gem_sal_rmse = np.sqrt(np.mean(gem_sal_errors))
@@ -667,8 +745,8 @@ def visualize_combined_results(true_values, gem_temp, gem_sal, predicted_values,
 
     accuracy_gain_temp = 100*(gem_temp_rmse-nn_temp_rmse)/gem_temp_rmse
     accuracy_gain_sal = 100*(gem_sal_rmse-nn_sal_rmse)/gem_sal_rmse
-    print(f"The NN temperature prediction is {accuracy_gain_temp:.3f}% more accurate than the GEM method in the validation set")
-    print(f"The NN salinity prediction is {accuracy_gain_sal:.3f}% more accurate than the GEM method in the validation set")
+    print(f"Average temperature accuracy gain: {accuracy_gain_temp:.3f}% (150m to max depth)")
+    print(f"Average salinity accuracy gain: {accuracy_gain_sal:.3f}% (150m to max depth)")
 
     # error = {
     #     "GEM T" : gem_temp_rmse,
@@ -742,14 +820,123 @@ def cluster_plots(lat_val, lon_val, dates_val, original_profiles, gem_temp, gem_
         sliced_val_pred = [array[:, idx] for array in val_predictions]
         # visualize_combined_results(original_profiles[:,:, idx], gem_temp[idx], gem_sal[idx], sliced_val_pred, sst_inputs[idx], ssh_inputs[idx], max_depth = max_depth, num_samples=num_samples)
      
+def plot_relative_errors(true_values, gem_temp, gem_sal, predicted_values, max_depth=2000):
+    n_depths = max_depth + 1
+    depth_levels = np.arange(n_depths)
+    
+    # Helper function to compute RMSE, gain, and their respective min/max for both temperature and salinity
+    def compute_rmse_gain(gem_errors, nn_errors):
+        gem_rmse_depth = np.sqrt(np.mean(gem_errors, axis=1))
+        nn_rmse_depth = np.sqrt(np.mean(nn_errors, axis=1))
+        
+        gem_std_depth = np.std(np.sqrt(gem_errors), axis=1)
+        nn_std_depth = np.std(np.sqrt(nn_errors), axis=1)
+        
+        gain_depth = 100*(gem_rmse_depth - nn_rmse_depth) / gem_rmse_depth
+        gain_std_depth = 100*(gem_std_depth - nn_std_depth) / gem_std_depth
+        
+        return gem_rmse_depth, nn_rmse_depth, gem_std_depth, nn_std_depth, gain_depth, gain_std_depth
+    
+    # Using helper function for temperature and salinity
+    results_temp = compute_rmse_gain(gem_temp_errors, nn_temp_errors)
+    results_sal = compute_rmse_gain(gem_sal_errors, nn_sal_errors)
+    
+    # Unpacking results
+    gem_temp_rmse_depth, nn_temp_rmse_depth, gem_temp_std_depth, nn_temp_std_depth, gain_temp_depth, gain_temp_std_depth = results_temp
+    gem_sal_rmse_depth, nn_sal_rmse_depth, gem_sal_std_depth, nn_sal_std_depth, gain_sal_depth, gain_sal_std_depth = results_sal
+
+    # Visualization
+    fig, axs = plt.subplots(2, 2, figsize=(16, 16))
+        
+    # Temperature RMSE
+    axs[0,0].fill_betweenx(depth_levels, nn_temp_rmse_depth - nn_temp_std_depth, nn_temp_rmse_depth + nn_temp_std_depth, color='r', alpha=0.1, label='NN average RMSE ± std')
+    # axs[0,0].fill_betweenx(depth_levels, nn_temp_rmse_depth - 2*nn_temp_std_depth, nn_temp_rmse_depth + 2*nn_temp_std_depth, color='r', alpha=0.1)
+    # axs[0,0].fill_betweenx(depth_levels, nn_temp_rmse_depth - 3*nn_temp_std_depth, nn_temp_rmse_depth + 3*nn_temp_std_depth, color='r', alpha=0.1)
+    axs[0,0].fill_betweenx(depth_levels, gem_temp_rmse_depth - gem_temp_std_depth, gem_temp_rmse_depth + gem_temp_std_depth, color='g', alpha=0.1, label='GEM average RMSE ± std')
+    # axs[0,0].fill_betweenx(depth_levels, gem_temp_rmse_depth - 2*gem_temp_std_depth, gem_temp_rmse_depth + 2*gem_temp_std_depth, color='g', alpha=0.1)
+    # axs[0,0].fill_betweenx(depth_levels, gem_temp_rmse_depth - 3*gem_temp_std_depth, gem_temp_rmse_depth + 3*gem_temp_std_depth, color='g', alpha=0.1)
+    axs[0,0].plot(nn_temp_rmse_depth, depth_levels, 'r-', label='NN average RMSE')
+    axs[0,0].plot(gem_temp_rmse_depth, depth_levels, 'g-', label='GEM average RMSE')
+    # axs[0,0].axvline(0, color='k', linestyle='--')
+    axs[0,0].invert_yaxis()
+    axs[0,0].legend(loc='lower right')
+    # axs[0,0].set_xlim(0, np.max([gem_temp_rmse_depth + 3*gem_temp_std_depth, nn_temp_rmse_depth + 3*nn_temp_std_depth]))
+    axs[0,0].set_title("Temperature RMSE per Depth")
+    axs[0,0].set_ylabel("Depth")
+    axs[0,0].set_xlabel("RMSE")
+    #grid on
+    
+
+    # Gain in Temperature Prediction
+    axs[1,0].plot(gain_temp_depth, depth_levels, 'b-', label='Average Gain')
+    axs[1,0].fill_betweenx(depth_levels, gain_temp_depth - gain_temp_std_depth, gain_temp_depth + gain_temp_std_depth, color='b', alpha=0.1, label='±1 std')
+    # axs[1,0].fill_betweenx(depth_levels, gain_temp_depth - 2*gain_temp_std_depth, gain_temp_depth + 2*gain_temp_std_depth, color='b', alpha=0.1)
+    # axs[1,0].fill_betweenx(depth_levels, gain_temp_depth - 3*gain_temp_std_depth, gain_temp_depth + 3*gain_temp_std_depth, color='b', alpha=0.1)
+    axs[1,0].axvline(0, color='k', linestyle='--')
+    axs[1,0].invert_yaxis()
+    axs[1,0].legend(loc='lower right')
+    # axs[1,0].set_xlim(-25, 100)
+    axs[1,0].set_title("Accuracy gain in Temperature, Prediction by Depth")
+    axs[1,0].set_ylabel("Depth")
+    axs[1,0].set_xlabel("Gain (%)")
+    
+    # Salinity RMSE
+    axs[0,1].fill_betweenx(depth_levels, gem_sal_rmse_depth - gem_sal_std_depth, gem_sal_rmse_depth + gem_sal_std_depth, color='g', alpha=0.1, label='GEM average RMSE ±1 std')
+    # axs[0,1].fill_betweenx(depth_levels, gem_sal_rmse_depth - 2*gem_sal_std_depth, gem_sal_rmse_depth + 2*gem_sal_std_depth, color='g', alpha=0.1)
+    # axs[0,1].fill_betweenx(depth_levels, gem_sal_rmse_depth - 3*gem_sal_std_depth, gem_sal_rmse_depth + 3*gem_sal_std_depth, color='g', alpha=0.1)
+    axs[0,1].fill_betweenx(depth_levels, nn_sal_rmse_depth - nn_sal_std_depth, nn_sal_rmse_depth + nn_sal_std_depth, color='r', alpha=0.1, label='NN average RMSE ±1 std')
+    # axs[0,1].fill_betweenx(depth_levels, nn_sal_rmse_depth - 2*nn_sal_std_depth, nn_sal_rmse_depth + 2*nn_sal_std_depth, color='r', alpha=0.1)
+    # axs[0,1].fill_betweenx(depth_levels, nn_sal_rmse_depth - 3*nn_sal_std_depth, nn_sal_rmse_depth + 3*nn_sal_std_depth, color='r', alpha=0.1)
+    axs[0,1].plot(nn_sal_rmse_depth, depth_levels, 'r-', label='NN average RMSE')
+    axs[0,1].plot(gem_sal_rmse_depth, depth_levels, 'g-', label='GEM average RMSE')
+    # axs[0,1].axvline(0, color='k', linestyle='--')
+    axs[0,1].invert_yaxis()
+    axs[0,1].legend(loc='lower right')
+    # axs[0,1].set_xlim(0, np.max([gem_sal_rmse_depth + 3*gem_sal_std_depth, nn_sal_rmse_depth + 3*nn_sal_std_depth]))
+    axs[0,1].set_title("Salinity RMSE per Depth")
+    axs[0,1].set_ylabel("Depth")
+    axs[0,1].set_xlabel("RMSE")
+    
+    # Gain in Salinity Prediction
+    axs[1,1].plot(gain_sal_depth, depth_levels, 'm-', label='Average Gain')
+    axs[1,1].fill_betweenx(depth_levels, gain_sal_depth - gain_sal_std_depth, gain_sal_depth + gain_sal_std_depth, color='m', alpha=0.1, label='±1 std')
+    # axs[1,1].fill_betweenx(depth_levels, gain_sal_depth - 2*gain_sal_std_depth, gain_sal_depth + 2*gain_sal_std_depth, color='m', alpha=0.1)
+    # axs[1,1].fill_betweenx(depth_levels, gain_sal_depth - 3*gain_sal_std_depth, gain_sal_depth + 3*gain_sal_std_depth, color='m', alpha=0.1)
+    axs[1,1].axvline(0, color='k', linestyle='--')
+    axs[1,1].invert_yaxis()
+    axs[1,1].legend(loc='lower right')
+    # axs[1,1].set_xlim(-25, 100)
+    axs[1,1].set_title("Accuracy gain in Salinity Prediction, by Depth")
+    axs[1,1].set_ylabel("Depth")
+    axs[1,1].set_xlabel("Gain (%)")
+
+    # Add grids to all subplots
+    for ax in axs.ravel():
+        ax.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+    
+    print(f"Average temperature RMSE: {np.mean(nn_temp_rmse_depth):.3f} ±{np.mean(nn_temp_std_depth):.3f}")
+    print(f"Average temperature RMSE: {np.mean(nn_temp_rmse_depth):.3f} ±{np.mean(nn_sal_std_depth):.3f}")
+    
+    file_name = "ARGO_X_GEM_RMSE_metrics.pdf"
+    # fig.savefig(file_name, bbox_inches='tight')  # Save the figure to a PDF. 'bbox_inches' ensures all elements are within the saved image
+
+    for ax in axs.flat:
+        for c in ax.collections:
+            c.set_rasterized(True)
+    fig.savefig(file_name, bbox_inches='tight', dpi=150)
+
+    print(f"Saved plots to {file_name}")
 
 #%%
 if __name__ == "__main__":
     # Configurable parameters
-    data_path = "/home/jmiranda/SubsurfaceFields/Data/ARGO_GoM_20220920.mat"
+    data_path = "/unity/g2/jmiranda/SubsurfaceFields/Data/ARGO_GoM_20220920.mat"
     
     # Define the path of the pickle file
-    pickle_file = 'config_dataset_ssh_long.pkl'
+    pickle_file = 'config_dataset_full.pkl'
 
     if os.path.exists(pickle_file):
         # Load data from the pickle file
@@ -771,21 +958,23 @@ if __name__ == "__main__":
     else:
         # Your original initialization code
         max_depth = 2000
-        epochs = 10000
-        patience = 1000
-        n_components = 16
+        epochs = 5000
+        patience = 300
+        n_components = 10
         batch_size = 200
         learning_rate = 0.001
-        dropout_prob = 0.4
-        layers_config = [512, 512, 512]
+        dropout_prob = 0.2
+        layers_config = [512, 512]
         input_params = {
             "timecos": True,
             "timesin": True,
-            "lat" : False,
-            "lon" : False,
-            "sss" : False,
-            "sst" : False,
-            "ssh" : True
+            "latcos":  False,
+            "latsin":  True,
+            "loncos":  True,
+            "lonsin":  True,
+            "sst": True,  # First value of temperature
+            "sss": True,
+            "ssh": True
         }
         train_size = 0.75
         val_size = 0.125
@@ -828,8 +1017,12 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     weightOffset = 2
-    criterion = genWeightedMSELoss(n_components, device, weightOffset)
+    
+    # TODO: set the appropriate loss
+    # criterion = genWeightedMSELoss(n_components, device, weightOffset)
     # criterion = nn.MSELoss()
+    criterion = PCALoss(temp_pca=train_dataset.dataset, sal_pca=train_dataset.dataset, n_components=n_components)
+
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     
     # print parameters and dataset size
@@ -867,8 +1060,7 @@ if __name__ == "__main__":
     # For PCA approximated profiles
     pca_approx_profiles = val_dataset.dataset.get_profiles(subset_indices, pca_approx=True)
 
-    # num_samples = val_predictions[0].shape[1]
-    num_samples = 2    
+    num_samples = 2
     # Visualize the results for the validation dataset
     # visualize_results_with_original(original_profiles, pca_approx_profiles, val_predictions, max_depth = max_depth, num_samples=num_samples)
 
@@ -880,7 +1072,6 @@ if __name__ == "__main__":
     with open("pca_sal.pkl", "wb") as f:
         pickle.dump(full_dataset.pca_sal, f)
         
-    
     sst_inputs, ssh_inputs = val_dataset.dataset.get_inputs(subset_indices)
     
     gem_temp, gem_sal = val_dataset.dataset.get_gem_profiles(subset_indices)
@@ -895,8 +1086,10 @@ if __name__ == "__main__":
     printParams()
     
     # Plots and comparisons with GEM (uncomment to use)
-    """
+   
     # seasonal_plots(lat_val, lon_val, dates_val, original_profiles, gem_temp, gem_sal, val_predictions, sst_inputs, ssh_inputs, max_depth, num_samples)
+    
+    # from sklearn.cluster import MiniBatchKMeans
     
     # #
     # #
@@ -936,12 +1129,12 @@ if __name__ == "__main__":
     #     scatter = ax.scatter(lon_val[idx], lat_val[idx], c=ssh_inputs[idx], cmap='viridis', edgecolors='k', linewidth=0.5, transform=ccrs.PlateCarree())
     #     cbar = plt.colorbar(scatter, ax=ax, orientation="vertical", pad=0.02, shrink=1)
     #     cbar.set_label("SSH Value")
-
-    #     ax.set_title(f"{variable_name} Cluster {cluster} profiles in validation \n {variable_name} accuracy gain ranges from {min_rmse:.1f}% to {max_rmse:.1f}%", fontsize=16)
-    #     plt.show()
         
     #     min_rmse = np.min(accuracy_gain_temp[idx])
     #     max_rmse = np.max(accuracy_gain_temp[idx])
+
+    #     ax.set_title(f"{variable_name} Cluster {cluster} profiles in validation \n {variable_name} accuracy gain ranges from {min_rmse:.1f}% to {max_rmse:.1f}%", fontsize=16)
+    #     plt.show()
         
         
     # variable_name = "Salinity"
@@ -972,136 +1165,176 @@ if __name__ == "__main__":
 
     
     # cluster_plots(lat_val, lon_val, dates_val, original_profiles, gem_temp, gem_sal, val_predictions, sst_inputs, ssh_inputs, max_depth, kmeans)
-    """
+           
+    print("Let's investigate how the method compares against vanilla GEM with in-situ SSH")
+        # RMSE Calculations and Accuracy Gain
+    gem_temp_errors = (gem_temp.T - original_profiles[:, 0, :]) ** 2
+    gem_sal_errors = (gem_sal.T - original_profiles[:, 1, :]) ** 2
+
+    nn_temp_errors = (val_predictions[0][:, :] - original_profiles[:, 0, :]) ** 2
+    nn_sal_errors = (val_predictions[1][:, :] - original_profiles[:, 1, :]) ** 2
+
+    gem_temp_rmse = np.sqrt(np.mean(gem_temp_errors, axis = 0))
+    gem_sal_rmse = np.sqrt(np.mean(gem_sal_errors, axis = 0))
+
+    nn_temp_rmse = np.sqrt(np.mean(nn_temp_errors, axis = 0))
+    nn_sal_rmse = np.sqrt(np.mean(nn_sal_errors, axis = 0))
+    
+    accuracy_gain_temp = 100*(gem_temp_rmse-nn_temp_rmse)/gem_temp_rmse
+    accuracy_gain_sal = 100*(gem_sal_rmse-nn_sal_rmse)/gem_sal_rmse
+    
+    plot_relative_errors(original_profiles, gem_temp, gem_sal, val_predictions, max_depth = max_depth)
+    
+    # Now for the satGEM
+    print("Now let's see how it performs by using satellite SSH with GEM")
+    gem_temp, gem_sal = val_dataset.dataset.get_gem_profiles(subset_indices, sat_ssh = True)
+    gem_temp_errors = (gem_temp.T - original_profiles[:, 0, :]) ** 2
+    gem_sal_errors = (gem_sal.T - original_profiles[:, 1, :]) ** 2
+
+    nn_temp_errors = (val_predictions[0][:, :] - original_profiles[:, 0, :]) ** 2
+    nn_sal_errors = (val_predictions[1][:, :] - original_profiles[:, 1, :]) ** 2
+
+    gem_temp_rmse = np.sqrt(np.mean(gem_temp_errors, axis = 0))
+    gem_sal_rmse = np.sqrt(np.mean(gem_sal_errors, axis = 0))
+
+    nn_temp_rmse = np.sqrt(np.mean(nn_temp_errors, axis = 0))
+    nn_sal_rmse = np.sqrt(np.mean(nn_sal_errors, axis = 0))
+    
+    accuracy_gain_temp = 100*(gem_temp_rmse-nn_temp_rmse)/gem_temp_rmse
+    accuracy_gain_sal = 100*(gem_sal_rmse-nn_sal_rmse)/gem_sal_rmse
+    
+    plot_relative_errors(original_profiles, gem_temp, gem_sal, val_predictions, max_depth = max_depth)
+    
+    
         
     #TODO: predict profiles for Paula
 
-    class PredictionDataset(torch.utils.data.Dataset):
-        """
-        Custom dataset for making predictions using the trained model.
+    # class PredictionDataset(torch.utils.data.Dataset):
+    #     """
+    #     Custom dataset for making predictions using the trained model.
         
-        Attributes:
-        - time_data: Array of time data.
-        - ssh_data: Sea Surface Height data.
-        - sst_data: Sea Surface Temperature data.
-        """
-        def __init__(self, input_params=None):
-            """
-            Args:
-            - all_time_data (array): Array of time data.
-            - ssh_data (array): Array of Sea Surface Height data.
-            - sst_data (array): Array of Sea Surface Temperature data.
-            """
-            # Specify the filename to load
-            filename = '/home/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/paula_profiles.pkl'
+    #     Attributes:
+    #     - time_data: Array of time data.
+    #     - ssh_data: Sea Surface Height data.
+    #     - sst_data: Sea Surface Temperature data.
+    #     """
+    #     def __init__(self, input_params=None):
+    #         """
+    #         Args:
+    #         - all_time_data (array): Array of time data.
+    #         - ssh_data (array): Array of Sea Surface Height data.
+    #         - sst_data (array): Array of Sea Surface Temperature data.
+    #         """
+    #         # Specify the filename to load
+    #         filename = '/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/paula_profiles.pkl'
 
-            # Initialize variables so you can use them after loading the data
-            all_lat_data, all_lon_data, all_time_data, sst_data, aviso_data = None, None, None, None, None
+    #         # Initialize variables so you can use them after loading the data
+    #         all_lat_data, all_lon_data, all_time_data, sst_data, aviso_data = None, None, None, None, None
 
-            # Open the file in read mode and load the dictionary
-            with open(filename, 'rb') as file:
-                loaded_data = pickle.load(file)
-                all_lat_data = loaded_data['lat']
-                all_lon_data = loaded_data['lon']
-                all_time_data = loaded_data['time']
-                sst_data = loaded_data['sst']
-                aviso_data = loaded_data['ssh']
-            self.TIME = all_time_data
-            self.SSH = aviso_data
-            self.SST = sst_data
-            self.LAT = all_lat_data
-            self.LON = all_lon_data
+    #         # Open the file in read mode and load the dictionary
+    #         with open(filename, 'rb') as file:
+    #             loaded_data = pickle.load(file)
+    #             all_lat_data = loaded_data['lat']
+    #             all_lon_data = loaded_data['lon']
+    #             all_time_data = loaded_data['time']
+    #             sst_data = loaded_data['sst']
+    #             aviso_data = loaded_data['ssh']
+    #         self.TIME = all_time_data
+    #         self.SSH = aviso_data
+    #         self.SST = sst_data
+    #         self.LAT = all_lat_data
+    #         self.LON = all_lon_data
             
-            # Define which parameters to include
-            if input_params is None:
-                input_params = {
-                    "timecos": False,
-                    "timesin": False,
-                    "lat": False,
-                    "lon": False,
-                    "sst": True,  # First value of temperature
-                    "sss": True,
-                    "ssh": True
-                }
+    #         # Define which parameters to include
+    #         if input_params is None:
+    #             input_params = {
+    #                 "timecos": False,
+    #                 "timesin": False,
+    #                 "lat": False,
+    #                 "lon": False,
+    #                 "sst": True,  # First value of temperature
+    #                 "sss": True,
+    #                 "ssh": True
+    #             }
 
-            self.input_params = input_params
+    #         self.input_params = input_params
 
-        def __len__(self):
-            """
-            Returns number of samples in the dataset.
-            """
-            return len(self.TIME)
+    #     def __len__(self):
+    #         """
+    #         Returns number of samples in the dataset.
+    #         """
+    #         return len(self.TIME)
 
-        def __getitem__(self, idx):
-            """
-            Args:
-            - idx (int): Index
+    #     def __getitem__(self, idx):
+    #         """
+    #         Args:
+    #         - idx (int): Index
 
-            Returns:
-            - tuple: Tuple (input_params, dummy_target), where dummy_target is just a placeholder.
-            """
-            inputs = []
+    #         Returns:
+    #         - tuple: Tuple (input_params, dummy_target), where dummy_target is just a placeholder.
+    #         """
+    #         inputs = []
             
-            if self.input_params["timecos"]:
-                inputs.append(np.cos(2*np.pi*(self.TIME[idx]%365)/365)) 
+    #         if self.input_params["timecos"]:
+    #             inputs.append(np.cos(2*np.pi*(self.TIME[idx]%365)/365)) 
                 
-            if self.input_params["timesin"]:
-                inputs.append(np.sin(2*np.pi*(self.TIME[idx]%365)/365))  
+    #         if self.input_params["timesin"]:
+    #             inputs.append(np.sin(2*np.pi*(self.TIME[idx]%365)/365))  
                 
-            if self.input_params["ssh"]:
-                inputs.append(self.SSH[idx])
+    #         if self.input_params["ssh"]:
+    #             inputs.append(self.SSH[idx])
             
-            if self.input_params["sst"]:
-                inputs.append(self.SST[idx])
+    #         if self.input_params["sst"]:
+    #             inputs.append(self.SST[idx])
 
-            inputs_tensor = torch.tensor(inputs, dtype=torch.float32)
+    #         inputs_tensor = torch.tensor(inputs, dtype=torch.float32)
             
-            # For predictions, the target can be a dummy variable as it's not used during predictions
-            dummy_target = torch.tensor([0])  # not used during predictions
+    #         # For predictions, the target can be a dummy variable as it's not used during predictions
+    #         dummy_target = torch.tensor([0])  # not used during predictions
             
-            return inputs_tensor, dummy_target
+    #         return inputs_tensor, dummy_target
         
-        def get_lat_lon_date(self, idx):
-            lat = self.LAT[idx]
-            lon = self.LON[idx]
-            date = self.TIME[idx]
-            return lat, lon, date
+    #     def get_lat_lon_date(self, idx):
+    #         lat = self.LAT[idx]
+    #         lon = self.LON[idx]
+    #         date = self.TIME[idx]
+    #         return lat, lon, date
         
-    paula_dataset = PredictionDataset(input_params=input_params)
-    paula_loader = DataLoader(paula_dataset, batch_size=batch_size, shuffle=False)
-    printParams()
-    # Get predictions for the validation dataset
-    paula_predictions_pcs = get_predictions(trained_model, paula_loader, device)
-    # Accessing the original dataset for inverse_transform
-    paula_predictions = val_dataset.dataset.inverse_transform(paula_predictions_pcs)
+    # paula_dataset = PredictionDataset(input_params=input_params)
+    # paula_loader = DataLoader(paula_dataset, batch_size=batch_size, shuffle=False)
+    # printParams()
+    # # Get predictions for the validation dataset
+    # paula_predictions_pcs = get_predictions(trained_model, paula_loader, device)
+    # # Accessing the original dataset for inverse_transform
+    # paula_predictions = val_dataset.dataset.inverse_transform(paula_predictions_pcs)
 
-    # Separate temperature and salinity predictions
-    temperature_predictions = paula_predictions[0]
-    salinity_predictions = paula_predictions[1]
+    # # Separate temperature and salinity predictions
+    # temperature_predictions = paula_predictions[0]
+    # salinity_predictions = paula_predictions[1]
     
-    # Retrieve lat, lon and date
-    lat, lon, date = paula_dataset.get_lat_lon_date(np.arange(len(paula_dataset)))
+    # # Retrieve lat, lon and date
+    # lat, lon, date = paula_dataset.get_lat_lon_date(np.arange(len(paula_dataset)))
 
-    # Create a dictionary containing the data you want to save
-    data_to_save = {
-        'temperature_predictions': temperature_predictions,
-        'salinity_predictions': salinity_predictions,
-        'lat': lat,
-        'lon': lon,
-        'date': date,
-        'model_params' : input_params
-    }
+    # # Create a dictionary containing the data you want to save
+    # data_to_save = {
+    #     'temperature_predictions': temperature_predictions,
+    #     'salinity_predictions': salinity_predictions,
+    #     'lat': lat,
+    #     'lon': lon,
+    #     'date': date,
+    #     'model_params' : input_params
+    # }
 
-    # Specify the filename to save to
-    if input_params["sst"]:
-        filename = '/home/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/predictions_sst_ssh_time.pkl'
-    else:
-        filename = '/home/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/predictions_ssh_time.pkl'
+    # # Specify the filename to save to
+    # if input_params["sst"]:
+    #     filename = '/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/predictions_sst_ssh_time.pkl'
+    # else:
+    #     filename = '/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/predictions_ssh_time.pkl'
 
-    # Open the file in write mode and save the dictionary
-    with open(filename, 'wb') as file:
-        pickle.dump(data_to_save, file)
+    # # Open the file in write mode and save the dictionary
+    # with open(filename, 'wb') as file:
+    #     pickle.dump(data_to_save, file)
 
-    print(f"Predictions have been saved to {filename}")
+    # print(f"Predictions have been saved to {filename}")
     
     # %% TODO: check for paula's profiles in the dataset instead of using satellite data
