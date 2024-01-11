@@ -8,6 +8,7 @@ import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import xarray as xr 
 from torch.utils.data import DataLoader
 from sklearn.decomposition import PCA
 # from scipy.signal import convolve2d
@@ -19,7 +20,7 @@ from datetime import datetime, timedelta
 from sklearn.cluster import MiniBatchKMeans
 
 # Set the seed for reproducibility
-seed = 42
+seed = 99
 torch.manual_seed(seed)
 random.seed(seed)
 np.random.seed(seed)
@@ -995,7 +996,127 @@ def plot_relative_errors(true_values, gem_temp, gem_sal, predicted_values, min_d
     fig.savefig(file_name, bbox_inches='tight', dpi=150)
 
     print(f"Saved plots to {file_name}")
+    
+def calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, rmse_values):
+    avg_rmse_grid = np.zeros((len(lat_bins)-1, len(lon_bins)-1))
+    num_prof_grid = np.zeros((len(lat_bins)-1, len(lon_bins)-1))
 
+    for i in range(len(lon_bins)-1):
+        for j in range(len(lat_bins)-1):
+            # Find points that fall into the current bin
+            in_bin = (lon_val >= lon_bins[i]) & (lon_val < lon_bins[i+1]) & (lat_val >= lat_bins[j]) & (lat_val < lat_bins[j+1])
+            # Calculate average RMSE for points in the bin
+            avg_rmse_grid[j, i] = np.mean(rmse_values[in_bin])
+            num_prof_grid[j, i] = np.sum(in_bin)
+
+    return avg_rmse_grid, num_prof_grid
+
+def plot_rmse_maps(lon_bins, lat_bins, avg_rmse_nn, avg_rmse_gem, num_prof, title_prefix):
+    # Calculate the difference
+    avg_rmse_gain = avg_rmse_nn - avg_rmse_gem
+
+    # Calculate centers of the bins
+    lon_centers = (lon_bins[:-1] + lon_bins[1:]) / 2
+    lat_centers = (lat_bins[:-1] + lat_bins[1:]) / 2
+    
+    vmin = 0
+
+    if title_prefix == "Temperature":
+        cmap = "YlOrRd"
+        units = "(°C)"
+        vmax = 3
+    else:
+        cmap = "PuBuGn"
+        units = "(PSU)"
+        vmax = 0.35
+        
+    # Create subplot grid
+    fig, ax1 = plt.subplots(1, 1, figsize=(15, 15), subplot_kw={'projection': ccrs.PlateCarree()})
+
+    # Plot the maps
+    plot_rmse_on_ax(ax1, lon_centers, lat_centers, avg_rmse_nn, num_prof, f"NN Average RMSE - {title_prefix}")
+
+    pcm = ax1.pcolormesh(lon_centers, lat_centers, avg_rmse_nn, cmap=cmap, vmin=vmin, vmax=vmax)
+    fig.colorbar(pcm, ax=ax1, orientation="vertical", pad=0.04, fraction=0.465*(1/15), label=f"Average RMSE {units}")
+    ax1.set_xlabel('Longitude')
+    ax1.set_ylabel('Latitude')
+    # Set x and y ticks, 
+    ax1.set_xticks(np.arange(-99, -81, 1))
+    ax1.set_yticks(np.arange(18, 30, 1))
+    #add grid
+    ax1.grid(color='gray', linestyle='--', linewidth=0.5)
+    plt.show()
+    
+def plot_rmse_on_ax(ax, lon_centers, lat_centers, avg_rmse_grid, num_prof, title):
+    ax.set_extent([-99, -81, 18, 30])  # Set to your area of interest
+    ax.coastlines()
+
+    pcm = ax.pcolormesh(lon_centers, lat_centers, avg_rmse_grid, cmap='coolwarm', vmin=-3, vmax=3)
+    ax.set_title(title, fontsize=18)
+
+    # Annotate each cell with the average RMSE value
+    for i, lon in enumerate(lon_centers):
+        for j, lat in enumerate(lat_centers):
+            value = avg_rmse_grid[j, i]
+            number = num_prof[j, i]
+            if not np.isnan(value):  # Check if the value is not NaN, and if there are more than 2 profiles in the bin
+                ax.text(lon, lat+0.2, f'{number:.0f}', color='gray', ha='center', va='center', fontsize=8, transform=ccrs.PlateCarree())
+                ax.text(lon, lat-0.2, f'{value:.2f}', color='black', ha='center', va='center', fontsize=8, transform=ccrs.PlateCarree())
+
+def plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn, avg_rmse_gdem, title_prefix):
+    # Calculate the difference
+    avg_rmse_diff = avg_rmse_gdem - avg_rmse_nn
+
+    # Set up color maps and limits
+    if title_prefix == "temperature":
+        cmap = "YlOrRd"
+        units = "(°C)"
+        vmax = 3
+    else:
+        cmap = "PuBuGn"
+        units = "(PSU)"
+        vmax = 0.35
+
+    # Custom colormap for difference plot
+    diff_cmap = plt.get_cmap('coolwarm')
+    norm_diff = plt.Normalize(-vmax, vmax)
+
+    # Create subplot grid
+    fig, axes = plt.subplots(1, 3, figsize=(30, 15), subplot_kw={'projection': ccrs.PlateCarree()})
+
+    # Titles for each subplot
+    titles = [f"NN (ours)", f"ISOP", f"Difference (ISOP - NN)"]
+
+    # Function to add values to bins
+    def annotate_bins(ax, data):
+        for i, lon in enumerate(lon_centers):
+            for j, lat in enumerate(lat_centers):
+                value = data[j, i]
+                if not np.isnan(value):
+                    ax.text(lon, lat, f'{value:.2f}', color='black', ha='center', va='center', fontsize=8, transform=ccrs.PlateCarree())
+
+    # Plotting NN RMSE, ISOP RMSE, and Difference
+    for i, (data, title) in enumerate(zip([avg_rmse_nn, avg_rmse_gdem, avg_rmse_diff], titles)):
+        if i < 2:
+            pcm = axes[i].pcolormesh(lon_centers, lat_centers, data, cmap=cmap, vmin=0, vmax=vmax)
+        else:  # For the difference plot
+            pcm_diff = axes[i].pcolormesh(lon_centers, lat_centers, data, cmap=diff_cmap, norm=norm_diff)
+        #bold titles
+        axes[i].set_title(title, weight='bold')
+        axes[i].coastlines()
+        annotate_bins(axes[i], data)
+        axes[i].set_xticks(np.arange(-99, -81, 1))
+        axes[i].set_yticks(np.arange(18, 30, 1))
+        axes[i].grid(color='gray', linestyle='--', linewidth=0.5)
+
+    # Adding colorbar for the first two plots
+    fig.colorbar(pcm, ax=axes[:2], orientation="vertical", pad=0.04, fraction=0.0145, label=f"Average RMSE {units}")
+
+    # Adding colorbar for the difference plot
+    fig.colorbar(pcm_diff, ax=axes[2], orientation="vertical", pad=0.04, fraction=0.031, label=f"Difference in RMSE {units}")
+    fig.suptitle(f"Average RMSE for synthetic {title_prefix} profiles per region", fontsize=24, y=0.69)
+    plt.show()
+    
 #%%
 if __name__ == "__main__":
     # Configurable parameters
@@ -1012,9 +1133,9 @@ if __name__ == "__main__":
     epochs = 8000
     patience = 500
     learning_rate = 0.001
-    train_size = 0.75
-    val_size = 0.125
-    test_size = 0.125
+    train_size = 0.7
+    val_size = 0.15
+    test_size = 0.15
     input_params = {
         "timecos": True,
         "timesin": True,
@@ -1138,6 +1259,28 @@ if __name__ == "__main__":
     # Accessing the original dataset for inverse_transform
     val_predictions = val_dataset.dataset.inverse_transform(val_predictions_pcs)
     
+    # load ISOP results
+    file_path_new = '/unity/g2/jmiranda/SubsurfaceFields/Data/ISOP1_rmse_bias_1deg_maps.nc'
+    data_new = xr.open_dataset(file_path_new)
+
+    # Create bins for longitude and latitude
+    lon_bins = np.arange(np.min(data_new.lon) - 0.5, np.max(data_new.lon) + 1.5, 1)
+    lat_bins = np.arange(np.min(data_new.lat) - 0.5, np.max(data_new.lat) + 1.5, 1)
+
+    # Calculate centers of the bins
+    lon_centers = (lon_bins[:-1] + lon_bins[1:]) / 2
+    lat_centers = (lat_bins[:-1] + lat_bins[1:]) / 2
+
+    # Initialize a NaN array for the number of profiles
+    num_prof = np.full((len(lat_centers), len(lon_centers)), np.nan)
+
+    # Extracting RMSE data and ensuring it matches the dimensions of the bins
+    avg_rmse_isop_t = data_new['t_rmse_syn']
+    avg_rmse_isop_s = data_new['s_rmse_syn']
+    
+    avg_rmse_gdem_t = data_new['t_rmse_gdem']
+    avg_rmse_gdem_s = data_new['s_rmse_gdem']
+    
     def viz():
         subset_indices = val_loader.dataset.indices
 
@@ -1205,80 +1348,44 @@ if __name__ == "__main__":
         lon_bins = np.arange(np.floor(np.min(lon_val)), np.ceil(np.max(lon_val)), bin_size)
         lat_bins = np.arange(np.floor(np.min(lat_val)), np.ceil(np.max(lat_val)), bin_size)
 
-        def calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, rmse_values):
-            avg_rmse_grid = np.zeros((len(lat_bins)-1, len(lon_bins)-1))
-
-            for i in range(len(lon_bins)-1):
-                for j in range(len(lat_bins)-1):
-                    # Find points that fall into the current bin
-                    in_bin = (lon_val >= lon_bins[i]) & (lon_val < lon_bins[i+1]) & (lat_val >= lat_bins[j]) & (lat_val < lat_bins[j+1])
-                    # Calculate average RMSE for points in the bin
-                    avg_rmse_grid[j, i] = np.mean(rmse_values[in_bin])
-
-            return avg_rmse_grid
-
-        def plot_rmse_maps(lon_bins, lat_bins, avg_rmse_nn, avg_rmse_gem, title_prefix):
-            # Calculate the difference
-            avg_rmse_gain = avg_rmse_nn - avg_rmse_gem
-
-            # Calculate centers of the bins
-            lon_centers = (lon_bins[:-1] + lon_bins[1:]) / 2
-            lat_centers = (lat_bins[:-1] + lat_bins[1:]) / 2
-            
-            vmin = 0
-
-            if title_prefix == "Temperature":
-                cmap = "YlOrRd"
-                units = "(°C)"
-                vmax = 3
-            else:
-                cmap = "PuBuGn"
-                units = "(PSU)"
-                vmax = 0.35
-                
-            # Create subplot grid
-            fig, ax1 = plt.subplots(1, 1, figsize=(15, 15), subplot_kw={'projection': ccrs.PlateCarree()})
-
-            # Plot the maps
-            plot_rmse_on_ax(ax1, lon_centers, lat_centers, avg_rmse_nn, f"NN Average RMSE - {title_prefix}")
-
-            pcm = ax1.pcolormesh(lon_centers, lat_centers, avg_rmse_nn, cmap=cmap, vmin=vmin, vmax=vmax)
-            fig.colorbar(pcm, ax=ax1, orientation="vertical", pad=0.04, fraction=0.47*(1/15), label=f"Average RMSE {units}")
-            ax1.set_xlabel('Longitude')
-            ax1.set_ylabel('Latitude')
-            # Set x and y ticks
-            ax1.set_xticks(lon_bins)
-            ax1.set_yticks(lat_bins)
-            plt.show()
-            
-        def plot_rmse_on_ax(ax, lon_centers, lat_centers, avg_rmse_grid, title):
-            ax.set_extent([-99, -81, 18, 30])  # Set to your area of interest
-            ax.coastlines()
-
-            pcm = ax.pcolormesh(lon_centers, lat_centers, avg_rmse_grid, cmap='coolwarm', vmin=-3, vmax=3)
-            ax.set_title(title, fontsize=18)
-
-            # Annotate each cell with the average RMSE value
-            for i, lon in enumerate(lon_centers):
-                for j, lat in enumerate(lat_centers):
-                    value = avg_rmse_grid[j, i]
-                    if not np.isnan(value):  # Check if the value is not NaN
-                        ax.text(lon, lat, f'{value:.2f}', color='black', ha='center', va='center', fontsize=8, transform=ccrs.PlateCarree())
-
         # Calculate average temperature RMSE for NN and GEM
-        avg_temp_rmse_nn = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, nn_temp_rmse)  # Replace nn_rmse with your RMSE values for NN
-        avg_temp_rmse_gem = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, gem_temp_rmse)  # Replace gem_rmse with your RMSE values for GEM
+        avg_temp_rmse_nn, num_prof_nn = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, nn_temp_rmse)  # Replace nn_rmse with your RMSE values for NN
+        avg_temp_rmse_gem, num_prof_gem = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, gem_temp_rmse)  # Replace gem_rmse with your RMSE values for GEM
         avg_temp_rmse_gain = avg_temp_rmse_nn - avg_temp_rmse_gem
 
-        plot_rmse_maps(lon_bins, lat_bins, avg_temp_rmse_nn, avg_temp_rmse_gem, "Temperature")
+        plot_rmse_maps(lon_bins, lat_bins, avg_temp_rmse_nn, avg_temp_rmse_gem, num_prof_nn, "Temperature")
         
         #now let's do the same for salinity
         # Calculate average temperature RMSE for NN and GEM
-        avg_sal_rmse_nn = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, nn_sal_rmse)  # Replace nn_rmse with your RMSE values for NN
-        avg_sal_rmse_gem = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, gem_sal_rmse)  # Replace gem_rmse with your RMSE values for GEM
+        avg_sal_rmse_nn, num_prof_nn = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, nn_sal_rmse)  # Replace nn_rmse with your RMSE values for NN
+        avg_sal_rmse_gem, num_prof_gem = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, gem_sal_rmse)  # Replace gem_rmse with your RMSE values for GEM
         avg_sal_rmse_gain = avg_sal_rmse_nn - avg_sal_rmse_gem
         
-        plot_rmse_maps(lon_bins, lat_bins, avg_sal_rmse_nn, avg_sal_rmse_gem, "Salinity")
+        # Create an empty array for the difference with the same shape as the ISOP data
+        avg_rmse_nn_t = np.full(avg_rmse_isop_t.shape, np.nan)
+        avg_rmse_nn_s = np.full(avg_rmse_isop_s.shape, np.nan)
+
+        tolerance = 1e-6  # A small tolerance value for floating-point comparison
+
+        # Iterate over each cell in the ISOP data
+        for i, lat in enumerate(lat_centers - 0.5):
+            for j, lon in enumerate(lon_centers - 0.5):
+                # Find the corresponding cell in the NN data
+                nn_lat_idx = np.argmin(np.abs(lat - lat_bins))
+                nn_lon_idx = np.argmin(np.abs(lon - lon_bins))
+
+                # Assign values to corresponding cells using a tolerance for comparison
+                if np.abs(lat - lat_bins[nn_lat_idx]) < tolerance and np.abs(lon - lon_bins[nn_lon_idx]) < tolerance:
+                    if nn_lat_idx < avg_temp_rmse_nn.shape[0] and nn_lon_idx < avg_temp_rmse_nn.shape[1]:
+                        avg_rmse_nn_t[i, j] = avg_temp_rmse_nn[nn_lat_idx, nn_lon_idx]
+                    if nn_lat_idx < avg_sal_rmse_nn.shape[0] and nn_lon_idx < avg_sal_rmse_nn.shape[1]:
+                        avg_rmse_nn_s[i, j] = avg_sal_rmse_nn[nn_lat_idx, nn_lon_idx]             
+
+        plot_rmse_maps(lon_bins, lat_bins, avg_sal_rmse_nn, avg_sal_rmse_gem, num_prof_nn, "Salinity")
+        
+        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_isop_t, "temperature")
+        # or
+        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_isop_s, "salinity")
         
     viz()
     
@@ -1332,3 +1439,34 @@ if __name__ == "__main__":
         viz()
 
     # %%
+#     def calculate_sound_speed_NPL(T, S, Z, Phi=45):
+#     """
+#     Calculate sound speed (in m/s) using the NPL equation.
+#     T: Temperature in degrees Celsius
+#     S: Salinity in PSU
+#     Z: Depth in meters
+#     Phi: Latitude in degrees (default 45)
+#     """
+#     c = (1402.5 + 5 * T - 5.44e-2 * T**2 + 2.1e-4 * T**3 
+#          + 1.33 * S - 1.23e-2 * S * T + 8.7e-5 * S * T**2 
+#          + 1.56e-2 * Z + 2.55e-7 * Z**2 - 7.3e-12 * Z**3 
+#          + 1.2e-6 * Z * (Phi - 45) - 9.5e-13 * T * Z**3 
+#          + 3e-7 * T**2 * Z + 1.43e-5 * S * Z)
+#     return c
+
+# # Recalculate sound speed at each depth using the NPL equation
+# sound_speed_profile_NPL = np.array([calculate_sound_speed_NPL(T, S, z) for T, S, z in zip(temperature_profile, salinity_profile, depths)])
+
+# # Finding the Sonic Layer Depth (SLD) using the NPL equation
+# max_sound_speed_index_NPL = np.argmax(sound_speed_profile_NPL)
+# SLD_NPL = depths[max_sound_speed_index_NPL]
+# # Conversion factor from meters to feet
+# meters_to_feet = 3.28084
+
+# # Conversion factor for the gradient from per feet to per 100 meters
+# conversion_factor = meters_to_feet / 100
+
+# # Calculating the Below Layer Gradient (BLG) using the NPL equation
+# gradient_NPL = np.gradient(sound_speed_profile_NPL, depths_feet)
+# # Average gradient below MLD in m/s per 100 feet using the NPL equation
+# BLG_NPL = np.mean(gradient_NPL[MLD_index:]) * conversion_factor
