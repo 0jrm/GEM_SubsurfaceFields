@@ -1063,7 +1063,7 @@ def plot_rmse_on_ax(ax, lon_centers, lat_centers, avg_rmse_grid, num_prof, title
                 ax.text(lon, lat+0.2, f'{number:.0f}', color='gray', ha='center', va='center', fontsize=8, transform=ccrs.PlateCarree())
                 ax.text(lon, lat-0.2, f'{value:.2f}', color='black', ha='center', va='center', fontsize=8, transform=ccrs.PlateCarree())
 
-def plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn, avg_rmse_gdem, title_prefix):
+def plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn, avg_rmse_gdem, title_prefix, second_method):
     # Calculate the difference
     avg_rmse_diff = avg_rmse_gdem - avg_rmse_nn
 
@@ -1085,7 +1085,7 @@ def plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn, avg_rmse_gdem, t
     fig, axes = plt.subplots(1, 3, figsize=(30, 15), subplot_kw={'projection': ccrs.PlateCarree()})
 
     # Titles for each subplot
-    titles = [f"NN (ours)", f"ISOP", f"Difference (ISOP - NN)"]
+    titles = [f"NN (ours)", f"{second_method}", f"Difference ({second_method} - NN)"]
 
     # Function to add values to bins
     def annotate_bins(ax, data):
@@ -1383,9 +1383,13 @@ if __name__ == "__main__":
 
         plot_rmse_maps(lon_bins, lat_bins, avg_sal_rmse_nn, avg_sal_rmse_gem, num_prof_nn, "Salinity")
         
-        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_isop_t, "temperature")
-        # or
-        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_isop_s, "salinity")
+        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_isop_t, "temperature", "ISOP")
+        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_isop_s, "salinity", "ISOP")
+        
+        #now for GDEM
+        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_gdem_t, "temperature", "GDEM")
+        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_gdem_s, "salinity", "GDEM")
+        
         
     viz()
     
