@@ -1117,6 +1117,60 @@ def plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn, avg_rmse_gdem, t
     fig.suptitle(f"Average RMSE for synthetic {title_prefix} profiles per region", fontsize=24, y=0.69)
     plt.show()
     
+def plot_residual_profiles_for_top_bins(lon_bins, lat_bins, lon_val, lat_val, nn_profiles, avg_rmse_grid, num_prof_grid, param, top_n=9):
+    """
+    Plots residual profiles for the top bins with the highest number of profiles.
+
+    Parameters:
+    - lon_bins, lat_bins: Arrays of longitude and latitude bin edges.
+    - lon_val, lat_val: Arrays of longitude and latitude values for each profile.
+    - nn_profiles, target_profiles: Arrays of neural network predicted and target profiles.
+    - avg_rmse_grid, num_prof_grid: Grids of average RMSE and number of profiles per bin.
+    - top_n: Number of top bins to plot. Default is 9 (for a 3x3 grid).
+    """
+    # Flatten the grid and sort bins by the number of profiles
+    num_profiles_flat = num_prof_grid.flatten()
+    sorted_indices = np.argsort(num_profiles_flat)[::-1][:top_n]
+
+    # Set up the 3x3 subplot
+    fig, axs = plt.subplots(3, 3, figsize=(15, 15))
+    axs = axs.flatten()
+
+    for idx, ax in enumerate(axs):
+        if idx >= len(sorted_indices):
+            ax.axis('off')
+            continue
+        
+        # Get the bin index
+        bin_index = np.unravel_index(sorted_indices[idx], num_prof_grid.shape)
+        j, i = bin_index
+
+        # Find profiles in this bin
+        in_bin = (lon_val >= lon_bins[i]) & (lon_val < lon_bins[i+1]) & (lat_val >= lat_bins[j]) & (lat_val < lat_bins[j+1])
+        
+        # Check if there are any profiles in the bin
+        if np.any(in_bin):
+            residuals = nn_profiles[:, in_bin].T
+
+            # Plotting each residual profile
+            for residual in residuals:
+                ax.plot(residual, np.arange(20,1801,1), label=f'Lat: {lat_bins[j]}-{lat_bins[j+1]}, Lon: {lon_bins[i]}-{lon_bins[i+1]}', color='gray', linewidth=0.5)
+        else:
+            ax.axis('off')  # No data for this bin
+            
+        ax.axvline(x=0, color='k', linewidth=0.5)
+        # Set title with lat/lon, number of profiles, and average RMSE
+        ax.set_title(f'Bin: Lat: {lat_bins[j]:.0f} ~ {lat_bins[j+1]:.0f}, Lon: {lon_bins[i]:.0f} ~ {lon_bins[i+1]:.0f}\n'
+                        f'Profiles: {num_prof_grid[j, i]}, Avg RMSE: {avg_rmse_grid[j, i]:.2f}')
+        fig.suptitle(f'Residual profiles for {param} bins with the most profiles\n', fontsize=16, fontweight="bold")
+        ax.set_xlabel('Residual')
+        ax.set_ylabel('Depth')
+        ax.invert_yaxis()
+        ax.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+    
 #%%
 if __name__ == "__main__":
     # Configurable parameters
@@ -1139,10 +1193,10 @@ if __name__ == "__main__":
     input_params = {
         "timecos": True,
         "timesin": True,
-        "latcos":  True,
-        "latsin":  True,
-        "loncos":  True,
-        "lonsin":  True,
+        "latcos":  False,
+        "latsin":  False,
+        "loncos":  False,
+        "lonsin":  False,
         "sat": True,  # Use satellite data?
         "sst": True,  # First value of temperature
         "sss": True,
@@ -1281,166 +1335,181 @@ if __name__ == "__main__":
     avg_rmse_gdem_t = data_new['t_rmse_gdem']
     avg_rmse_gdem_s = data_new['s_rmse_gdem']
     
-    def viz():
-        subset_indices = val_loader.dataset.indices
+    # # # # # # # # # # # 
+    # def viz(): # if you want to visualize the results with just viz(), uncomment this and add a indent to the next lines
+    # # # # # # # # # 
+    subset_indices = val_loader.dataset.indices
 
-        # For original profiles
-        original_profiles = val_dataset.dataset.get_profiles(subset_indices, pca_approx=False)
+    # For original profiles
+    original_profiles = val_dataset.dataset.get_profiles(subset_indices, pca_approx=False)
 
-        # For PCA approximated profiles
-        pca_approx_profiles = val_dataset.dataset.get_profiles(subset_indices, pca_approx=True)
+    # For PCA approximated profiles
+    pca_approx_profiles = val_dataset.dataset.get_profiles(subset_indices, pca_approx=True)
+    
+    #Load GEM polyfits to benchmark
+    with open("pca_temp.pkl", "wb") as f:
+        pickle.dump(full_dataset.pca_temp, f)
+
+    with open("pca_sal.pkl", "wb") as f:
+        pickle.dump(full_dataset.pca_sal, f)
         
-        #Load GEM polyfits to benchmark
-        with open("pca_temp.pkl", "wb") as f:
-            pickle.dump(full_dataset.pca_temp, f)
+    sst_inputs, ssh_inputs = val_dataset.dataset.get_inputs(subset_indices)
+    
+    gem_temp, gem_sal = val_dataset.dataset.get_gem_profiles(subset_indices)
+    
+    lat_val, lon_val, dates_val = val_dataset.dataset.get_lat_lon_date(subset_indices)
 
-        with open("pca_sal.pkl", "wb") as f:
-            pickle.dump(full_dataset.pca_sal, f)
+    visualize_combined_results(original_profiles, gem_temp, gem_sal, val_predictions, sst_inputs, ssh_inputs, min_depth=min_depth, max_depth = max_depth, num_samples=num_samples)
+    
+    printParams()
+    
+    print("Let's investigate how the method compares against vanilla GEM with in-situ SSH")
+        # RMSE Calculations and Accuracy Gain
+    gem_temp_errors = (gem_temp.T - original_profiles[:, 0, :]) ** 2
+    gem_sal_errors = (gem_sal.T - original_profiles[:, 1, :]) ** 2
+
+    nn_temp_errors = (val_predictions[0][:, :] - original_profiles[:, 0, :]) ** 2
+    nn_sal_errors = (val_predictions[1][:, :] - original_profiles[:, 1, :]) ** 2
+
+    gem_temp_rmse = np.sqrt(np.mean(gem_temp_errors, axis = 0))
+    gem_sal_rmse = np.sqrt(np.mean(gem_sal_errors, axis = 0))
+
+    nn_temp_rmse = np.sqrt(np.mean(nn_temp_errors, axis = 0))
+    nn_sal_rmse = np.sqrt(np.mean(nn_sal_errors, axis = 0))
+    
+    accuracy_gain_temp = 100*(gem_temp_rmse-nn_temp_rmse)/gem_temp_rmse
+    accuracy_gain_sal = 100*(gem_sal_rmse-nn_sal_rmse)/gem_sal_rmse
+    
+    # plot_relative_errors(original_profiles, gem_temp, gem_sal, val_predictions, min_depth=min_depth, max_depth = max_depth)
+    
+    # Now for the satGEM
+    print("Now let's see how it performs by using satellite SSH with GEM")
+    gem_temp, gem_sal = val_dataset.dataset.get_gem_profiles(subset_indices, sat_ssh = True)
+    gem_temp_errors = (gem_temp.T - original_profiles[:, 0, :]) ** 2
+    gem_sal_errors = (gem_sal.T - original_profiles[:, 1, :]) ** 2
+
+    nn_temp_errors = (val_predictions[0][:, :] - original_profiles[:, 0, :]) ** 2
+    nn_sal_errors = (val_predictions[1][:, :] - original_profiles[:, 1, :]) ** 2
+
+    gem_temp_rmse = np.sqrt(np.mean(gem_temp_errors, axis = 0))
+    gem_sal_rmse = np.sqrt(np.mean(gem_sal_errors, axis = 0))
+
+    nn_temp_rmse = np.sqrt(np.mean(nn_temp_errors, axis = 0))
+    nn_sal_rmse = np.sqrt(np.mean(nn_sal_errors, axis = 0))
+    
+    accuracy_gain_temp = 100*(gem_temp_rmse-nn_temp_rmse)/gem_temp_rmse
+    accuracy_gain_sal = 100*(gem_sal_rmse-nn_sal_rmse)/gem_sal_rmse            
+        
+    # Heatmaps of the RMSE
+    lon_bins = np.arange(np.floor(np.min(lon_val)), np.ceil(np.max(lon_val)), bin_size)
+    lat_bins = np.arange(np.floor(np.min(lat_val)), np.ceil(np.max(lat_val)), bin_size)
+
+    # Calculate average temperature RMSE for NN and GEM
+    avg_temp_rmse_nn, num_prof_nn = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, nn_temp_rmse)  # Replace nn_rmse with your RMSE values for NN
+    avg_temp_rmse_gem, num_prof_gem = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, gem_temp_rmse)  # Replace gem_rmse with your RMSE values for GEM
+    avg_temp_rmse_gain = avg_temp_rmse_nn - avg_temp_rmse_gem
+
+    plot_rmse_maps(lon_bins, lat_bins, avg_temp_rmse_nn, avg_temp_rmse_gem, num_prof_nn, "Temperature")
+    
+    #now let's do the same for salinity
+    # Calculate average temperature RMSE for NN and GEM
+    avg_sal_rmse_nn, num_prof_nn = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, nn_sal_rmse)  # Replace nn_rmse with your RMSE values for NN
+    avg_sal_rmse_gem, num_prof_gem = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, gem_sal_rmse)  # Replace gem_rmse with your RMSE values for GEM
+    avg_sal_rmse_gain = avg_sal_rmse_nn - avg_sal_rmse_gem
+    
+    # Create an empty array for the difference with the same shape as the ISOP data
+    avg_rmse_nn_t = np.full(avg_rmse_isop_t.shape, np.nan)
+    avg_rmse_nn_s = np.full(avg_rmse_isop_s.shape, np.nan)
+
+    tolerance = 1e-6  # A small tolerance value for floating-point comparison
+
+    # Iterate over each cell in the ISOP data
+    for i, lat in enumerate(lat_centers - 0.5):
+        for j, lon in enumerate(lon_centers - 0.5):
+            # Find the corresponding cell in the NN data
+            nn_lat_idx = np.argmin(np.abs(lat - lat_bins))
+            nn_lon_idx = np.argmin(np.abs(lon - lon_bins))
+
+            # Assign values to corresponding cells using a tolerance for comparison
+            if np.abs(lat - lat_bins[nn_lat_idx]) < tolerance and np.abs(lon - lon_bins[nn_lon_idx]) < tolerance:
+                if nn_lat_idx < avg_temp_rmse_nn.shape[0] and nn_lon_idx < avg_temp_rmse_nn.shape[1]:
+                    avg_rmse_nn_t[i, j] = avg_temp_rmse_nn[nn_lat_idx, nn_lon_idx]
+                if nn_lat_idx < avg_sal_rmse_nn.shape[0] and nn_lon_idx < avg_sal_rmse_nn.shape[1]:
+                    avg_rmse_nn_s[i, j] = avg_sal_rmse_nn[nn_lat_idx, nn_lon_idx]             
+
+    plot_rmse_maps(lon_bins, lat_bins, avg_sal_rmse_nn, avg_sal_rmse_gem, num_prof_nn, "Salinity")
+    
+    plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_isop_t, "temperature", "ISOP")
+    plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_isop_s, "salinity", "ISOP")
+    
+    #now for GDEM
+    plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_gdem_t, "temperature", "GDEM")
+    plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_gdem_s, "salinity", "GDEM")
+    
+        # Residual calculations
+    nn_temp_residuals = val_predictions[0][:, :] - original_profiles[:, 0, :]
+    nn_sal_residuals = val_predictions[1][:, :] - original_profiles[:, 1, :]
+    
+    print(f'shape of residuals is: {len(nn_temp_residuals)} - {nn_temp_residuals[0].shape}')
+
+    # Call the plot function for temperature residuals
+    plot_residual_profiles_for_top_bins(lon_bins, lat_bins, lon_val, lat_val, nn_temp_residuals, avg_temp_rmse_nn, num_prof_nn, 'Temperature', top_n=9)
+
+    # Call the plot function for salinity residuals
+    plot_residual_profiles_for_top_bins(lon_bins, lat_bins, lon_val, lat_val, nn_sal_residuals, avg_sal_rmse_nn, num_prof_nn, 'Salinity', top_n=9)
+    
+    # viz() uncomment this and add a indent to the previous lines to visualize the results with viz()
+    
+    # # use the entire dataset
+    
+    # # Entire dataset:
+    # print("Now let's see how it performs on the entire dataset")
+    # val_predictions_bkp = val_predictions
+    # val_dataset_bkp = val_dataset
+    # val_predictions_pcs_bkp = val_predictions_pcs
+    # val_loader_bkp = val_loader
+    
+    # # Get predictions for the entire dataset
+    # train_dataset_0, val_dataset, test_dataset_0 = split_dataset(full_dataset, 0, 1, 0)
+    # val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    # val_predictions_pcs = get_predictions(trained_model, val_loader, device)
+    # val_predictions = val_dataset.dataset.inverse_transform(val_predictions_pcs)
+    
+    # viz()
+    
+    # if n_runs > 1:
+    #     #load and aggregate all models
+    #     model_directory = "/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/saved_models/"
+    #     if not input_params['sat']:
+    #         suffix = "_sat.pth"
+    #         model_files = [f for f in os.listdir(model_directory) if not f.endswith(suffix)]
+    #     else:
+    #         model_files = [f for f in os.listdir(model_directory) if f.endswith(suffix)]
             
-        sst_inputs, ssh_inputs = val_dataset.dataset.get_inputs(subset_indices)
+    #     models = []
+    #     for file in model_files:
+    #         model_path = os.path.join(model_directory, file)
+    #         model = torch.load(model_path)
+    #         models.append(model)
+
+    #     # Collect predictions from all models
+    #     ensemble_temp_val_predictions = np.zeros_like(val_predictions[0])
+    #     ensemble_sal_val_predictions = np.zeros_like(val_predictions[1])
+    #     ct = 0
+    #     for model in models:
+    #         predictions_pcs = get_predictions(model, val_loader, device)
+    #         predictions = val_dataset.dataset.inverse_transform(predictions_pcs)        
+    #         ensemble_temp_val_predictions += predictions[0]
+    #         ensemble_sal_val_predictions += predictions[1]
+    #         ct += 1
+
+    #     # Averaging the predictions
+    #     ensemble_temp_val_predictions /= ct
+    #     ensemble_sal_val_predictions /= ct
+
+    #     val_predictions = (ensemble_temp_val_predictions, ensemble_sal_val_predictions)
         
-        gem_temp, gem_sal = val_dataset.dataset.get_gem_profiles(subset_indices)
-        
-        lat_val, lon_val, dates_val = val_dataset.dataset.get_lat_lon_date(subset_indices)
-
-        visualize_combined_results(original_profiles, gem_temp, gem_sal, val_predictions, sst_inputs, ssh_inputs, min_depth=min_depth, max_depth = max_depth, num_samples=num_samples)
-        
-        printParams()
-        
-        print("Let's investigate how the method compares against vanilla GEM with in-situ SSH")
-            # RMSE Calculations and Accuracy Gain
-        gem_temp_errors = (gem_temp.T - original_profiles[:, 0, :]) ** 2
-        gem_sal_errors = (gem_sal.T - original_profiles[:, 1, :]) ** 2
-
-        nn_temp_errors = (val_predictions[0][:, :] - original_profiles[:, 0, :]) ** 2
-        nn_sal_errors = (val_predictions[1][:, :] - original_profiles[:, 1, :]) ** 2
-
-        gem_temp_rmse = np.sqrt(np.mean(gem_temp_errors, axis = 0))
-        gem_sal_rmse = np.sqrt(np.mean(gem_sal_errors, axis = 0))
-
-        nn_temp_rmse = np.sqrt(np.mean(nn_temp_errors, axis = 0))
-        nn_sal_rmse = np.sqrt(np.mean(nn_sal_errors, axis = 0))
-        
-        accuracy_gain_temp = 100*(gem_temp_rmse-nn_temp_rmse)/gem_temp_rmse
-        accuracy_gain_sal = 100*(gem_sal_rmse-nn_sal_rmse)/gem_sal_rmse
-        
-        # plot_relative_errors(original_profiles, gem_temp, gem_sal, val_predictions, min_depth=min_depth, max_depth = max_depth)
-        
-        # Now for the satGEM
-        print("Now let's see how it performs by using satellite SSH with GEM")
-        gem_temp, gem_sal = val_dataset.dataset.get_gem_profiles(subset_indices, sat_ssh = True)
-        gem_temp_errors = (gem_temp.T - original_profiles[:, 0, :]) ** 2
-        gem_sal_errors = (gem_sal.T - original_profiles[:, 1, :]) ** 2
-
-        nn_temp_errors = (val_predictions[0][:, :] - original_profiles[:, 0, :]) ** 2
-        nn_sal_errors = (val_predictions[1][:, :] - original_profiles[:, 1, :]) ** 2
-
-        gem_temp_rmse = np.sqrt(np.mean(gem_temp_errors, axis = 0))
-        gem_sal_rmse = np.sqrt(np.mean(gem_sal_errors, axis = 0))
-
-        nn_temp_rmse = np.sqrt(np.mean(nn_temp_errors, axis = 0))
-        nn_sal_rmse = np.sqrt(np.mean(nn_sal_errors, axis = 0))
-        
-        accuracy_gain_temp = 100*(gem_temp_rmse-nn_temp_rmse)/gem_temp_rmse
-        accuracy_gain_sal = 100*(gem_sal_rmse-nn_sal_rmse)/gem_sal_rmse            
-            
-        # Heatmaps of the RMSE
-        lon_bins = np.arange(np.floor(np.min(lon_val)), np.ceil(np.max(lon_val)), bin_size)
-        lat_bins = np.arange(np.floor(np.min(lat_val)), np.ceil(np.max(lat_val)), bin_size)
-
-        # Calculate average temperature RMSE for NN and GEM
-        avg_temp_rmse_nn, num_prof_nn = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, nn_temp_rmse)  # Replace nn_rmse with your RMSE values for NN
-        avg_temp_rmse_gem, num_prof_gem = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, gem_temp_rmse)  # Replace gem_rmse with your RMSE values for GEM
-        avg_temp_rmse_gain = avg_temp_rmse_nn - avg_temp_rmse_gem
-
-        plot_rmse_maps(lon_bins, lat_bins, avg_temp_rmse_nn, avg_temp_rmse_gem, num_prof_nn, "Temperature")
-        
-        #now let's do the same for salinity
-        # Calculate average temperature RMSE for NN and GEM
-        avg_sal_rmse_nn, num_prof_nn = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, nn_sal_rmse)  # Replace nn_rmse with your RMSE values for NN
-        avg_sal_rmse_gem, num_prof_gem = calculate_average_rmse_per_bin(lon_bins, lat_bins, lon_val, lat_val, gem_sal_rmse)  # Replace gem_rmse with your RMSE values for GEM
-        avg_sal_rmse_gain = avg_sal_rmse_nn - avg_sal_rmse_gem
-        
-        # Create an empty array for the difference with the same shape as the ISOP data
-        avg_rmse_nn_t = np.full(avg_rmse_isop_t.shape, np.nan)
-        avg_rmse_nn_s = np.full(avg_rmse_isop_s.shape, np.nan)
-
-        tolerance = 1e-6  # A small tolerance value for floating-point comparison
-
-        # Iterate over each cell in the ISOP data
-        for i, lat in enumerate(lat_centers - 0.5):
-            for j, lon in enumerate(lon_centers - 0.5):
-                # Find the corresponding cell in the NN data
-                nn_lat_idx = np.argmin(np.abs(lat - lat_bins))
-                nn_lon_idx = np.argmin(np.abs(lon - lon_bins))
-
-                # Assign values to corresponding cells using a tolerance for comparison
-                if np.abs(lat - lat_bins[nn_lat_idx]) < tolerance and np.abs(lon - lon_bins[nn_lon_idx]) < tolerance:
-                    if nn_lat_idx < avg_temp_rmse_nn.shape[0] and nn_lon_idx < avg_temp_rmse_nn.shape[1]:
-                        avg_rmse_nn_t[i, j] = avg_temp_rmse_nn[nn_lat_idx, nn_lon_idx]
-                    if nn_lat_idx < avg_sal_rmse_nn.shape[0] and nn_lon_idx < avg_sal_rmse_nn.shape[1]:
-                        avg_rmse_nn_s[i, j] = avg_sal_rmse_nn[nn_lat_idx, nn_lon_idx]             
-
-        plot_rmse_maps(lon_bins, lat_bins, avg_sal_rmse_nn, avg_sal_rmse_gem, num_prof_nn, "Salinity")
-        
-        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_isop_t, "temperature", "ISOP")
-        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_isop_s, "salinity", "ISOP")
-        
-        #now for GDEM
-        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_gdem_t, "temperature", "GDEM")
-        plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_gdem_s, "salinity", "GDEM")
-        
-        
-    viz()
-    
-    # Entire dataset:
-    print("Now let's see how it performs on the entire dataset")
-    val_predictions_bkp = val_predictions
-    val_dataset_bkp = val_dataset
-    val_predictions_pcs_bkp = val_predictions_pcs
-    val_loader_bkp = val_loader
-    
-    # Get predictions for the entire dataset
-    train_dataset_0, val_dataset, test_dataset_0 = split_dataset(full_dataset, 0, 1, 0)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    val_predictions_pcs = get_predictions(trained_model, val_loader, device)
-    val_predictions = val_dataset.dataset.inverse_transform(val_predictions_pcs)
-    
-    viz()
-    
-    if n_runs > 1:
-        #load and aggregate all models
-        model_directory = "/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/saved_models/"
-        if not input_params['sat']:
-            suffix = "_sat.pth"
-            model_files = [f for f in os.listdir(model_directory) if not f.endswith(suffix)]
-        else:
-            model_files = [f for f in os.listdir(model_directory) if f.endswith(suffix)]
-            
-        models = []
-        for file in model_files:
-            model_path = os.path.join(model_directory, file)
-            model = torch.load(model_path)
-            models.append(model)
-
-        # Collect predictions from all models
-        ensemble_temp_val_predictions = np.zeros_like(val_predictions[0])
-        ensemble_sal_val_predictions = np.zeros_like(val_predictions[1])
-        ct = 0
-        for model in models:
-            predictions_pcs = get_predictions(model, val_loader, device)
-            predictions = val_dataset.dataset.inverse_transform(predictions_pcs)        
-            ensemble_temp_val_predictions += predictions[0]
-            ensemble_sal_val_predictions += predictions[1]
-            ct += 1
-
-        # Averaging the predictions
-        ensemble_temp_val_predictions /= ct
-        ensemble_sal_val_predictions /= ct
-
-        val_predictions = (ensemble_temp_val_predictions, ensemble_sal_val_predictions)
-        
-        viz()
+    #     viz()
 
     # %%
 #     def calculate_sound_speed_NPL(T, S, Z, Phi=45):
