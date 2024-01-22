@@ -9,10 +9,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import xarray as xr 
+from numpy.polynomial.polynomial import Polynomial
 from torch.utils.data import DataLoader
 from sklearn.decomposition import PCA
 # from scipy.signal import convolve2d
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RegularGridInterpolator, interp1d
 from torch.utils.data import random_split
 import pickle
 import cartopy.crs as ccrs
@@ -70,20 +71,20 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         self.LAT = self.data['LAT']
         self.LON = self.data['LON']
         self.ADT = self.data['ADTnoseason_loc']
-        self.min_lat = 17.0
-        self.max_lat = 29.0
-        self.min_lon = -91.0
-        self.max_lon = -78.0
+        self.min_lat = 15.0
+        self.max_lat = 35.0
+        self.min_lon = -100.0
+        self.max_lon = -70.0
         
         # Define which parameters to include
         if input_params is None:
             input_params = {
-                "timecos": False,
-                "timesin": False,
-                "latcos": False,
-                "latsin": False,
-                "loncos": False,
-                "lonsin": False,
+                "timecos": True,
+                "timesin": True,
+                "latcos": True,
+                "latsin": True,
+                "loncos": True,
+                "lonsin": True,
                 "sst": True,  # First value of temperature
                 "sss": True,
                 "ssh": True
@@ -94,12 +95,14 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         self.SSS, self.SST, self.SSH = self._load_satellite_data()
         self.satSSS, self.satSST, self.satSSH = self.SSS, self.SST, self.SSH #backup
         
-        valid_mask = self._get_valid_mask(self.data)
+        self.valid_mask = self._get_valid_mask(self.data)
+        valid_mask = self.valid_mask
         self.TEMP, self.SAL, self.SSH, self.SST, self.SSS, self.TIME, self.LAT, self.LON, self.ADT = self._filter_and_fill_data(self.data, valid_mask)
         
         # Applying PCA
         self.temp_pcs, self.pca_temp = self._apply_pca(self.TEMP, n_components)
         self.sal_pcs, self.pca_sal = self._apply_pca(self.SAL, n_components)
+        
 
     def reload(self):
         # in case we want to change parameters...
@@ -110,6 +113,17 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         # Applying PCA
         self.temp_pcs, self.pca_temp = self._apply_pca(self.TEMP, n_components)
         self.sal_pcs, self.pca_sal = self._apply_pca(self.SAL, n_components)
+        
+        print("self.LAT")
+        print(f"{np.min(self.LAT)}, {np.max(self.LAT)}")
+        print("self.LON")
+        print(f"{np.min(self.LON)}, {np.max(self.LON)}")      
+        print("self.SST")
+        print(f"{np.min(self.SST)}, {np.max(self.SST)}")
+        print("self.SSS")
+        print(f"{np.min(self.SSS)}, {np.max(self.SSS)}")
+        print("self.SSH")
+        print(f"{np.min(self.SSH)}, {np.max(self.SSH)}")
 
     def _load_satellite_data(self):
         """
@@ -132,10 +146,13 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
             
             try:
                 sss_datapoint, lats, lons = get_sss_by_date(self.sss_folder, c_date, bbox)
-                interpolator = RegularGridInterpolator((lats, lons), sss_datapoint.sss_smap.values, bounds_error=False, fill_value=None)
+                interpolator = RegularGridInterpolator((lats, lons), sss_datapoint.sss_smap_40km.values, bounds_error=False, fill_value=None)
                 sss_data[date_idx] = interpolator(coordinates)
+                if (sss_data[date_idx] < 0).any() or (sss_data[date_idx] > 45).any():
+                    sss_data[date_idx] = np.nan
+                    print(f"Invalid SSS on date {c_date}, value: {sss_data[date_idx]}, coordinates: {coordinates}, lats: {lats}, lons: {lons}")
             except Exception as e:
-                print(f"SSS not found for date {c_date}. Error: {e}")
+                print(f"SSS not found on date {c_date}. Error: {e}")
             
             try:
                 aviso_date, aviso_lats, aviso_lons = get_aviso_by_date(self.aviso_folder, c_date, bbox)
@@ -221,8 +238,8 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
     
     def _get_valid_mask(self, data):
         """Internal method to get mask of valid profiles based on missing values."""
-        temp_mask = np.sum(np.isnan(data['TEMP']), axis=0) <= 10
-        sal_mask = np.sum(np.isnan(data['SAL']), axis=0) <= 10
+        temp_mask = np.sum(np.isnan(data['TEMP'][self.min_depth:self.max_depth+1]), axis=0) <= 5
+        sal_mask = np.sum(np.isnan(data['SAL'][self.min_depth:self.max_depth+1]), axis=0) <= 5
         
         ssh_mask = ~np.isnan(self.SSH)
         sst_mask = ~np.isnan(self.SST)
@@ -320,26 +337,123 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
 
         return profiles_array
     
-    def get_gem_profiles(self, indices, sat_ssh = False, filename='/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/GEM_polyfits.pkl'):
-        # Load GEM polyfits from file
-        with open(filename, 'rb') as f:
-            gem_polyfits = pickle.load(f)
+    def calc_gem(self, degree = 7, sat_ssh = False):
+        """
+        Calculates this dataset's polyfits for the GEM profiles.
+
+        Args:
+        - degree: Degree of the polynomial fit. Default is 7.
+        - sat_ssh: Flag to use satellite SSH instead of profile SSH. Uses measured SSH as default.
+
+        Returns:
+        - nothing, but saves the polyfits in the attributes `self.gem_T_polyfits` and `self.gem_S_polyfits`.
+        """
+        
+        self.pressure_grid = np.arange(self.min_depth, self.max_depth+1)
+        self.gem_T_polyfits = []
+        self.gem_S_polyfits = []
+        
+        if sat_ssh:
+            sort_idx = np.argsort(self.SSH)
+        else:
+            sort_idx = np.argsort(self.ADT)
+            
+        adt_sorted = self.ADT[sort_idx] + np.arange(len(self.ADT)) * 1e-10 # add small number to avoid duplicate values
+        temp_sorted = self.TEMP[:, sort_idx]
+        sal_sorted = self.SAL[:, sort_idx]
+        
+        #For each pressure level
+        for i, p in enumerate(self.pressure_grid):
+
+            # Get the temperature and salinity at this pressure level
+            TEMP_at_p = temp_sorted[i, :]
+            SAL_at_p = sal_sorted[i, :]
+            
+            interp_TEMP = interp1d(adt_sorted, TEMP_at_p, fill_value="extrapolate")
+            TEMP_at_p = interp_TEMP(adt_sorted)
+
+            interp_SAL = interp1d(adt_sorted, SAL_at_p, fill_value="extrapolate")
+            SAL_at_p = interp_SAL(adt_sorted)
+
+            ## Skip polynomial fit for pressure levels with no valid values after handling NaNs
+            # if not np.all(np.isnan(TEMP_at_p)) and not np.all(np.isnan(SAL_at_p)):
+            ##
+            # Fit a polynomial of the specified degree to the temperature and salinity at this pressure level
+            TEMP_polyfit = Polynomial.fit(adt_sorted, TEMP_at_p, degree)
+            SAL_polyfit = Polynomial.fit(adt_sorted, SAL_at_p, degree)
+
+            # Append the polynomial fit to the lists
+            self.gem_T_polyfits.append(TEMP_polyfit)
+            self.gem_S_polyfits.append(SAL_polyfit)
+        return
+    
+    # def get_gem_profiles(self, indices, sat_ssh = False, filename='/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/GEM_polyfits.pkl'):
+    #     # Load GEM polyfits from file
+    #     with open(filename, 'rb') as f:
+    #         gem_polyfits = pickle.load(f)
+            
+    #     # Interpolate the temperature and salinity data onto the new grid
+    #     temp_GEM = np.empty((len(indices), self.max_depth+1-self.min_depth))
+    #     sal_GEM = np.empty((len(indices), self.max_depth+1-self.min_depth))
+
+    #     if sat_ssh:
+    #         # ssh = self.SSH[indices] 
+    #         ssh = 2668.9* self.SSH[indices]  + 4214.1
+    #     else:
+    #         ssh = self.ADT[indices]
+        
+    #     # For each pressure level
+    #     for i in range(len(gem_polyfits['TEMP'])):
+    #         # Evaluate the fitted polynomial at the given SSH values
+    #         temp_GEM[:, i] = gem_polyfits['TEMP'][i](ssh)
+    #         sal_GEM[:, i] = gem_polyfits['SAL'][i](ssh)
+        
+    #     # Interpolate missing values in temp_GEM and sal_GEM
+    #     for array in [temp_GEM, sal_GEM]:
+    #         for row in range(array.shape[0]):
+    #             valid_mask = ~np.isnan(array[row])
+    #             if not valid_mask.any():  # skip rows with only NaNs
+    #                 continue
+
+    #             array[row] = np.interp(np.arange(array.shape[1]), np.where(valid_mask)[0], array[row, valid_mask])
+        
+    #             # If NaNs at the start, fill with the first non-NaN value
+    #             first_valid_idx = valid_mask.argmax()
+    #             array[row, :first_valid_idx] = array[row, first_valid_idx]
+                
+    #             # If NaNs at the end, fill with the last non-NaN value
+    #             last_valid_idx = len(array[row]) - valid_mask[::-1].argmax() - 1
+    #             array[row, last_valid_idx+1:] = array[row, last_valid_idx]
+        
+    #     return temp_GEM, sal_GEM
+    
+    def get_gem_profiles(self, indices, sat_ssh = False):
+        '''
+        Generates the gem profiles for the given indices.
+        
+        Args:
+        - indices (list or numpy.ndarray): List of indices for which profiles are needed.
+        - sat_ssh (bool): Flag to use satellite SSH instead of profile SSH. Uses measured SSH as default.
+        
+        Returns:
+        - numpy.ndarray: concatenated temperature and salinity profiles in the required format for visualization.
+        '''
             
         # Interpolate the temperature and salinity data onto the new grid
         temp_GEM = np.empty((len(indices), self.max_depth+1-self.min_depth))
         sal_GEM = np.empty((len(indices), self.max_depth+1-self.min_depth))
 
-        if sat_ssh:
+        if sat_ssh: #arbitrary conversion, not used
             # ssh = self.SSH[indices] 
             ssh = 2668.9* self.SSH[indices]  + 4214.1
         else:
             ssh = self.ADT[indices]
         
         # For each pressure level
-        for i in range(len(gem_polyfits['TEMP'])):
+        for i in range(len(self.gem_T_polyfits)):
             # Evaluate the fitted polynomial at the given SSH values
-            temp_GEM[:, i] = gem_polyfits['TEMP'][i](ssh)
-            sal_GEM[:, i] = gem_polyfits['SAL'][i](ssh)
+            temp_GEM[:, i] = self.gem_T_polyfits[i](ssh)
+            sal_GEM[:, i] = self.gem_S_polyfits[i](ssh)
         
         # Interpolate missing values in temp_GEM and sal_GEM
         for array in [temp_GEM, sal_GEM]:
@@ -378,8 +492,8 @@ class TemperatureSalinityDataset(torch.utils.data.Dataset):
         Returns:
         - numpy.ndarray: Concatenated vector of variances for temperature and salinity PCs.
         """
-        temp_variance = self.pca_temp.explained_variance_
-        sal_variance = self.pca_sal.explained_variance_
+        temp_variance = self.pca_temp.explained_variance_ratio_
+        sal_variance = self.pca_sal.explained_variance_ratio_
         concatenated_variance = np.concatenate([temp_variance, sal_variance])
         return concatenated_variance
 
@@ -791,24 +905,24 @@ def visualize_combined_results(true_values, gem_temp, gem_sal, predicted_values,
         nn_temp_dif = predicted_values[0][:, idx]-true_values[:,0, idx]
         nn_sal_dif = predicted_values[1][:, idx]-true_values[:,1, idx]
         
-        axs[1][0].plot(gem_temp_dif, depth_levels, 'g', label="GEM Profile", alpha = 0.75)
-        axs[1][0].plot(nn_temp_dif, depth_levels, 'r', label="NN Profile", alpha = 0.75)
+        axs[1][0].plot(np.abs(gem_temp_dif), depth_levels, 'g', label="GEM Profile", alpha = 0.75)
+        axs[1][0].plot(np.abs(nn_temp_dif), depth_levels, 'r', label="NN Profile", alpha = 0.75)
         axs[1][0].axvline(0, color='k', linestyle='--', linewidth=0.5)
         axs[1][0].invert_yaxis()
         axs[1][0].set_title(f"Temperature Differences")
         axs[1][0].set_ylabel("Depth")
-        axs[1][0].set_xlabel("RMSE (°C)")
+        axs[1][0].set_xlabel("Absolute difference (°C)")
         axs[1][0].legend(loc='best')
         axs[1][0].grid(color='gray', linestyle='--', linewidth=0.5)
 
         # Salinity difference
-        axs[1][1].plot(gem_sal_dif, depth_levels, 'g', label="GEM Profile", alpha = 0.75)
-        axs[1][1].plot(nn_sal_dif, depth_levels, 'r', label="NN Profile", alpha = 0.75)
+        axs[1][1].plot(np.abs(gem_sal_dif), depth_levels, 'g', label="GEM Profile", alpha = 0.75)
+        axs[1][1].plot(np.abs(nn_sal_dif), depth_levels, 'r', label="NN Profile", alpha = 0.75)
         axs[1][1].axvline(0, color='k', linestyle='--', linewidth=0.5)
         axs[1][1].invert_yaxis()
         axs[1][1].set_title(f"Salinity Differences")
         axs[1][1].set_ylabel("Depth")
-        axs[1][1].set_xlabel("RMSE (PSU²)")
+        axs[1][1].set_xlabel("Absolute difference (PSU)")
         axs[1][1].legend(loc='best')
         axs[1][1].grid(color='gray', linestyle='--', linewidth=0.5)
 
@@ -1066,6 +1180,8 @@ def plot_rmse_on_ax(ax, lon_centers, lat_centers, avg_rmse_grid, num_prof, title
 def plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn, avg_rmse_gdem, title_prefix, second_method):
     # Calculate the difference
     avg_rmse_diff = avg_rmse_gdem - avg_rmse_nn
+    avg_rmse_improv = np.mean(100*(avg_rmse_nn - avg_rmse_gdem)/avg_rmse_gdem)
+    print(f"Average {title_prefix} RMSE improvement: {avg_rmse_improv:.2f}%")
 
     # Set up color maps and limits
     if title_prefix == "temperature":
@@ -1116,8 +1232,8 @@ def plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn, avg_rmse_gdem, t
     fig.colorbar(pcm_diff, ax=axes[2], orientation="vertical", pad=0.04, fraction=0.031, label=f"Difference in RMSE {units}")
     fig.suptitle(f"Average RMSE for synthetic {title_prefix} profiles per region", fontsize=24, y=0.69)
     plt.show()
-    
-def plot_residual_profiles_for_top_bins(lon_bins, lat_bins, lon_val, lat_val, nn_profiles, avg_rmse_grid, num_prof_grid, param, top_n=9):
+
+def plot_residual_profiles_for_top_bins(lon_bins, lat_bins, lon_val, lat_val, nn_profiles, avg_rmse_grid, num_prof_grid, param, min_depth, max_depth, top_n=9):
     """
     Plots residual profiles for the top bins with the highest number of profiles.
 
@@ -1154,7 +1270,7 @@ def plot_residual_profiles_for_top_bins(lon_bins, lat_bins, lon_val, lat_val, nn
 
             # Plotting each residual profile
             for residual in residuals:
-                ax.plot(residual, np.arange(20,1801,1), label=f'Lat: {lat_bins[j]}-{lat_bins[j+1]}, Lon: {lon_bins[i]}-{lon_bins[i+1]}', color='gray', linewidth=0.5)
+                ax.plot(residual, np.arange(min_depth,max_depth+1, 1), label=f'Lat: {lat_bins[j]}-{lat_bins[j+1]}, Lon: {lon_bins[i]}-{lon_bins[i+1]}', color='gray', linewidth=0.5)
         else:
             ax.axis('off')  # No data for this bin
             
@@ -1181,7 +1297,7 @@ if __name__ == "__main__":
     n_runs = 1
     layers_config = [512, 512]
     batch_size = 300
-    min_depth = 20
+    min_depth = 0
     max_depth = 1800
     dropout_prob = 0.2
     epochs = 8000
@@ -1193,10 +1309,10 @@ if __name__ == "__main__":
     input_params = {
         "timecos": True,
         "timesin": True,
-        "latcos":  False,
-        "latsin":  False,
-        "loncos":  False,
-        "lonsin":  False,
+        "latcos":  True,
+        "latsin":  True,
+        "loncos":  True,
+        "lonsin":  True,
         "sat": True,  # Use satellite data?
         "sst": True,  # First value of temperature
         "sss": True,
@@ -1240,6 +1356,7 @@ if __name__ == "__main__":
             }
             pickle.dump(data, file)
 
+    full_dataset.calc_gem()
     train_dataset, val_dataset, test_dataset = split_dataset(full_dataset, train_size, val_size, test_size)
 
     # Dataloaders
@@ -1255,6 +1372,8 @@ if __name__ == "__main__":
     
     # Loss function using the variance of the PCA components as weights
     weights = full_dataset.get_pca_variance()
+    
+    print(f"Explained Variance - T: {(sum(full_dataset.pca_temp.explained_variance_ratio_)*100):.1f}% - S: {(100*sum(full_dataset.pca_sal.explained_variance_ratio_)):.1f}%")
     
     # Set the appropriate loss
     # criterion = genWeightedMSELoss(n_components, device, weights)
@@ -1359,7 +1478,7 @@ if __name__ == "__main__":
     
     lat_val, lon_val, dates_val = val_dataset.dataset.get_lat_lon_date(subset_indices)
 
-    visualize_combined_results(original_profiles, gem_temp, gem_sal, val_predictions, sst_inputs, ssh_inputs, min_depth=min_depth, max_depth = max_depth, num_samples=num_samples)
+    visualize_combined_results(pca_approx_profiles, gem_temp, gem_sal, val_predictions, sst_inputs, ssh_inputs, min_depth=min_depth, max_depth = max_depth, num_samples=num_samples)
     
     printParams()
     
@@ -1380,7 +1499,7 @@ if __name__ == "__main__":
     accuracy_gain_temp = 100*(gem_temp_rmse-nn_temp_rmse)/gem_temp_rmse
     accuracy_gain_sal = 100*(gem_sal_rmse-nn_sal_rmse)/gem_sal_rmse
     
-    # plot_relative_errors(original_profiles, gem_temp, gem_sal, val_predictions, min_depth=min_depth, max_depth = max_depth)
+    plot_relative_errors(original_profiles, gem_temp, gem_sal, val_predictions, min_depth=min_depth, max_depth = max_depth)
     
     # Now for the satGEM
     print("Now let's see how it performs by using satellite SSH with GEM")
@@ -1420,6 +1539,9 @@ if __name__ == "__main__":
     # Create an empty array for the difference with the same shape as the ISOP data
     avg_rmse_nn_t = np.full(avg_rmse_isop_t.shape, np.nan)
     avg_rmse_nn_s = np.full(avg_rmse_isop_s.shape, np.nan)
+    
+    avg_rmse_gem_t = np.full(avg_rmse_isop_t.shape, np.nan)
+    avg_rmse_gem_s = np.full(avg_rmse_isop_s.shape, np.nan)
 
     tolerance = 1e-6  # A small tolerance value for floating-point comparison
 
@@ -1434,31 +1556,114 @@ if __name__ == "__main__":
             if np.abs(lat - lat_bins[nn_lat_idx]) < tolerance and np.abs(lon - lon_bins[nn_lon_idx]) < tolerance:
                 if nn_lat_idx < avg_temp_rmse_nn.shape[0] and nn_lon_idx < avg_temp_rmse_nn.shape[1]:
                     avg_rmse_nn_t[i, j] = avg_temp_rmse_nn[nn_lat_idx, nn_lon_idx]
+                    avg_rmse_gem_t[i, j] = avg_temp_rmse_gem[nn_lat_idx, nn_lon_idx]
                 if nn_lat_idx < avg_sal_rmse_nn.shape[0] and nn_lon_idx < avg_sal_rmse_nn.shape[1]:
                     avg_rmse_nn_s[i, j] = avg_sal_rmse_nn[nn_lat_idx, nn_lon_idx]             
+                    avg_rmse_gem_s[i, j] = avg_sal_rmse_gem[nn_lat_idx, nn_lon_idx]
 
     plot_rmse_maps(lon_bins, lat_bins, avg_sal_rmse_nn, avg_sal_rmse_gem, num_prof_nn, "Salinity")
     
+    #GEM
+    plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_gem_t, "temperature", "GEM")
+    plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_gem_s, "salinity", "GEM")
+    
+    #ISOP
     plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_isop_t, "temperature", "ISOP")
     plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_isop_s, "salinity", "ISOP")
     
-    #now for GDEM
-    plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_gdem_t, "temperature", "GDEM")
-    plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_gdem_s, "salinity", "GDEM")
+    # #GDEM
+    # plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_t, avg_rmse_gdem_t, "temperature", "GDEM")
+    # plot_comparison_maps(lon_centers, lat_centers, avg_rmse_nn_s, avg_rmse_gdem_s, "salinity", "GDEM")
     
-        # Residual calculations
+    # Residual calculations
     nn_temp_residuals = val_predictions[0][:, :] - original_profiles[:, 0, :]
     nn_sal_residuals = val_predictions[1][:, :] - original_profiles[:, 1, :]
     
-    print(f'shape of residuals is: {len(nn_temp_residuals)} - {nn_temp_residuals[0].shape}')
+    # print(f'shape of residuals is: {len(nn_temp_residuals)} - {nn_temp_residuals[0].shape}')
 
     # Call the plot function for temperature residuals
-    plot_residual_profiles_for_top_bins(lon_bins, lat_bins, lon_val, lat_val, nn_temp_residuals, avg_temp_rmse_nn, num_prof_nn, 'Temperature', top_n=9)
+    plot_residual_profiles_for_top_bins(lon_bins, lat_bins, lon_val, lat_val, nn_temp_residuals, avg_temp_rmse_nn, num_prof_nn, 'Temperature', min_depth=min_depth, max_depth=max_depth, top_n=9)
 
     # Call the plot function for salinity residuals
-    plot_residual_profiles_for_top_bins(lon_bins, lat_bins, lon_val, lat_val, nn_sal_residuals, avg_sal_rmse_nn, num_prof_nn, 'Salinity', top_n=9)
+    plot_residual_profiles_for_top_bins(lon_bins, lat_bins, lon_val, lat_val, nn_sal_residuals, avg_sal_rmse_nn, num_prof_nn, 'Salinity', min_depth=min_depth, max_depth=max_depth, top_n=9)
     
     # viz() uncomment this and add a indent to the previous lines to visualize the results with viz()
+    
+    def prepare_inputs(data, input_params):
+        """
+        Transforms the data from the pickle file into the format expected by the model.
+
+        Args:
+        - data (dict): Data loaded from the pickle file.
+        - input_params (dict): Dictionary indicating which features to include.
+
+        Returns:
+        - torch.Tensor: Tensor of transformed input data.
+        """
+        num_samples = len(data['time'])  # Assuming all arrays in 'data' have the same length
+        inputs = []
+
+        # Iterate over each sample and create input features
+        for i in range(num_samples):
+            sample_inputs = []
+            
+            if input_params.get("timecos", False):
+                sample_inputs.append(np.cos(2 * np.pi * (data['time'][i] % 365) / 365))
+            
+            if input_params.get("timesin", False):
+                sample_inputs.append(np.sin(2 * np.pi * (data['time'][i] % 365) / 365))
+            
+            if input_params.get("latcos", False):
+                sample_inputs.append(np.cos(2 * np.pi * (data['lat'][i] / 180)))
+            
+            if input_params.get("latsin", False):
+                sample_inputs.append(np.sin(2 * np.pi * (data['lat'][i] / 180)))
+            
+            if input_params.get("loncos", False):
+                sample_inputs.append(np.cos(2 * np.pi * (data['lon'][i] / 360)))
+            
+            if input_params.get("lonsin", False):
+                sample_inputs.append(np.sin(2 * np.pi * (data['lon'][i] / 360)))
+
+            if input_params.get("sat", False):
+                if input_params.get("sss", False):
+                    sample_inputs.append(data['sss'][i])
+                if input_params.get("sst", False):
+                    sample_inputs.append(data['sst'][i])
+                if input_params.get("ssh", False):
+                    sample_inputs.append(data['ssh'][i])
+                    
+            # Convert the list of inputs for this sample to a tensor and add to the main list
+            inputs.append(torch.tensor(sample_inputs, dtype=torch.float32))
+
+        # Convert the list of tensors to a single tensor
+        inputs_tensor = torch.stack(inputs)
+
+        return inputs_tensor
+    # Load data from pickle file
+    with open('/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/paula_profiles_sss.pkl', 'rb') as file:
+        data = pickle.load(file)
+        
+    # Prepare the inputs
+    inputs_tensor = prepare_inputs(data, input_params)
+    # Move the inputs tensor to the same device as the model
+    inputs_tensor = inputs_tensor.to(device)
+
+    # Get predictions
+    model.eval()
+    with torch.no_grad():
+        paula_predictions_pcs = model(inputs_tensor)
+        paula_predictions_pcs_cpu = paula_predictions_pcs.cpu().numpy()
+        paula_predictions = val_dataset.dataset.inverse_transform(paula_predictions_pcs_cpu)
+    
+    # Specify the filename to save to
+    filename = '/unity/g2/jmiranda/SubsurfaceFields/GEM_SubsurfaceFields/paula_predictions_20140115.pkl'
+
+    # Open the file in write mode and save the dictionary
+    with open(filename, 'wb') as file:
+        pickle.dump(paula_predictions, file)
+
+    print(f"Data has been saved to {filename}")
     
     # # use the entire dataset
     
